@@ -64,6 +64,50 @@ class MyRob(CRobLinkAngs):
                     self.setReturningLed(False)
                 self.wander()
 
+    def _deduce_linear_velocity(self):
+        """
+        Based on the input from the obstacle sensors, drive slower if there are close obstacles near the more important
+         ones, and faster the farther it is from said obstacles
+        :return: The scalar value of the linear velocity, where the unit is the robot's diameter
+        """
+        # Radar IDs
+        center_id: int = 0
+        left_id: int = 1
+        right_id: int = 2
+        back_id: int = 3
+        # Get sensors values
+        left = self.measures.irSensor[left_id]
+        right = self.measures.irSensor[right_id]
+        center = self.measures.irSensor[center_id]
+        back = self.measures.irSensor[back_id]
+
+        # The total coefficient's purpose is used to calculate the absolute coefficient of each sensor in the formula
+        # This variable is to be adjusted, based on whatever seems more adequate, theoretically or in a trial and error
+        #  approach
+        total_coefficient: float = 5.0
+        # These are the contribution percentages of each sensor, where
+        #  the closer a sensor is to the obstacle, the slower the robot should be.
+        # Notes on adjusting the parameters:
+        #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
+        #  * The back sensor value should be the smallest (least important one to calculate the velocity)
+        cp: float = 0.5  # center
+        lp: float = 0.2  # left
+        rp: float = 0.2  # right
+        bp: float = 1 - (cp + lp + rp)  # back
+        assert 0 <= bp < 1
+
+        return 1 / (total_coefficient * (left * lp
+                                         + right * rp
+                                         + center * cp
+                                         + back * bp))
+
+    def _deduce_rotational_velocity(self):
+        """
+
+        :return: The rotational velocity (in degrees, radians or other units?)
+        """
+        raise NotImplemented
+
     def wander(self):
 
         # Radar IDs
@@ -72,14 +116,8 @@ class MyRob(CRobLinkAngs):
         right_id: int = 2
         back_id: int = 3
 
-        # Proximity indexes
-        very_close: int = 3
-        close: int = 2
-        far: float = 1.0
-        very_far: float = 0.5
-
         # Alternate movement indicators
-        lin: float = 1
+        lin: float = self._deduce_linear_velocity()
         rot: float = math.pi  # half rotation
 
         if self.measures.irSensor[center_id] > 3.0 \
@@ -100,13 +138,13 @@ class MyRob(CRobLinkAngs):
             print('Go')
             self.driveMotors(0.2, 0.2)
 
-        in_l: float = lin - rot/2
-        in_r: float = rot + in_l
-        # TODO uncomment when decide to use lin/rot instead of each motor's power
+        in_l: float = lin - rot
+        in_r: float = lin + rot
+        # TODO uncomment when prepared to use lin/rot instead of each motor's power
         # self.driveMotors(in_l, in_r)
 
 
-class Map():
+class Map:
     def __init__(self, filename):
         tree = ET.parse(filename)
         root = tree.getroot()
