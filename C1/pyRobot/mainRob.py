@@ -81,20 +81,20 @@ class MyRob(CRobLinkAngs):
         center = self.measures.irSensor[center_id]
         back = self.measures.irSensor[back_id]
 
+        # TODO These variables are to be adjusted,
+        #  based on whatever seems more adequate, theoretically or in a trial and error approach
         # The total coefficient's purpose is used to calculate the absolute coefficient of each sensor in the formula
-        # This variable is to be adjusted, based on whatever seems more adequate, theoretically or in a trial and error
-        #  approach
         total_coefficient: float = 5.0
         # These are the contribution percentages of each sensor, where
         #  the closer a sensor is to the obstacle, the slower the robot should be.
         # Notes on adjusting the parameters:
         #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
-        #  * The back sensor value should be the smallest (least important one to calculate the velocity)
+        #  * The back sensor value should be the smallest (least important one to calculate the linear velocity)
         cp: float = 0.5  # center
         lp: float = 0.2  # left
         rp: float = 0.2  # right
         bp: float = 1 - (cp + lp + rp)  # back
-        assert 0 <= bp < 1
+        assert 0 <= bp < 1, "Sum of relative obstacle sensor coefficients should equal 1"
 
         return 1 / (total_coefficient * (left * lp
                                          + right * rp
@@ -106,42 +106,32 @@ class MyRob(CRobLinkAngs):
 
         :return: The rotational velocity (in degrees, radians or other units?)
         """
-        raise NotImplemented
-
-    def wander(self):
-
         # Radar IDs
         center_id: int = 0
         left_id: int = 1
         right_id: int = 2
         back_id: int = 3
+        # Get sensors values
+        left = self.measures.irSensor[left_id]
+        right = self.measures.irSensor[right_id]
+        center = self.measures.irSensor[center_id]
+        back = self.measures.irSensor[back_id]
+
+        # TODO adjust this value through trial and error or/and with theoretical reasoning
+        coefficient: float = 1
+
+        return coefficient / center * (right - left)
+
+    def wander(self):
 
         # Alternate movement indicators
         lin: float = self._deduce_linear_velocity()
-        rot: float = math.pi  # half rotation
-
-        if self.measures.irSensor[center_id] > 3.0 \
-                or self.measures.irSensor[right_id] > 3.0 \
-                or self.measures.irSensor[back_id] > 3.0:
-            print('Rotate left')
-            self.driveMotors(-0.1, +0.1)
-        elif self.measures.irSensor[left_id] > 3.0:
-            print('Rotate right')
-            self.driveMotors(+0.1, -0.1)
-        elif self.measures.irSensor[left_id] > 1:
-            print('Rotate slowly right')
-            self.driveMotors(0.1, 0.0)
-        elif self.measures.irSensor[right_id] > 1:
-            print('Rotate slowly left')
-            self.driveMotors(0.0, 0.1)
-        else:
-            print('Go')
-            self.driveMotors(0.2, 0.2)
+        rot: float = self._deduce_rotational_velocity()
 
         in_l: float = lin - rot
         in_r: float = lin + rot
-        # TODO uncomment when prepared to use lin/rot instead of each motor's power
-        # self.driveMotors(in_l, in_r)
+
+        self.driveMotors(in_l, in_r)
 
 
 class Map:
