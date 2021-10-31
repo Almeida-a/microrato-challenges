@@ -24,13 +24,15 @@ class MyRob(CRobLinkAngs):
 
     def run(self):
         if self.status != 0:
-            print("Connection refused or error")
+            print(f"Connection refused or error [{self.status}]")
             quit()
 
         state = 'stop'
         stopped_state = 'run'
 
         while True:
+            # last_checkpoint: int = -1
+            # ground: int = self.measures.ground
             self.readSensors()
 
             if self.measures.endLed:
@@ -63,6 +65,15 @@ class MyRob(CRobLinkAngs):
                 if self.measures.returningLed == True:
                     self.setReturningLed(False)
                 self.wander()
+
+            # if ground == 0 and last_checkpoint == 2:
+            #     # TODO Save time and score
+            #     score: int = self.measures.score
+            #     time: int = self.measures.time
+            #     print(f"Score: {score}; Time: {time}")
+            #
+            # last_checkpoint = ground if ground > 0 else 2
+            # assert 3 > ground > -2, "Incorrect ground value!"
 
     def _deduce_linear_velocity(self):
         """
