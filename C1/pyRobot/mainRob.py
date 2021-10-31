@@ -95,18 +95,22 @@ class MyRob(CRobLinkAngs):
         # TODO These variables are to be adjusted,
         #  based on whatever seems more adequate, theoretically or in a trial and error approach
         # The total coefficient's purpose is used to calculate the absolute coefficient of each sensor in the formula
-        total_coefficient: float = 5.0
+        total_coefficient: float = 2.0
         # These are the contribution percentages of each sensor, where
         #  the closer a sensor is to the obstacle, the slower the robot should be.
         # Notes on adjusting the parameters:
         #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
         #  * The back sensor value should be the smallest (least important one to calculate the linear velocity)
-        cp: float = 0.5  # center
-        lp: float = 0.2  # left
-        rp: float = 0.2  # right
+        cp: float = 0.7 # center
+        lp: float = 0.1  # left
+        rp: float = 0.1  # right
         bp: float = 1 - (cp + lp + rp)  # back
         assert 0 <= bp < 1, "Sum of relative obstacle sensor coefficients should equal 1"
-
+        
+        print(f"left = {left}", end=", ")
+        print(f"right = {right}", end=", ")
+        print(f"center = {center}", end=", ")
+        print(f"back = {back}")
         return 1 / (total_coefficient * (left * lp
                                          + right * rp
                                          + center * cp
@@ -129,9 +133,9 @@ class MyRob(CRobLinkAngs):
         back = self.measures.irSensor[back_id]
 
         # TODO adjust this value through trial and error or/and with theoretical reasoning
-        coefficient: float = 1
+        coefficient: float = 0.65
 
-        return coefficient / center * (right - left)
+        return coefficient * (right - left)
 
     def wander(self):
 
