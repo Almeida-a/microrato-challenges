@@ -31,8 +31,8 @@ class MyRob(CRobLinkAngs):
         stopped_state = 'run'
 
         while True:
-            # last_checkpoint: int = -1
-            # ground: int = self.measures.ground
+            last_checkpoint: int = -1
+            ground: int = self.measures.ground
             self.readSensors()
 
             if self.measures.endLed:
@@ -66,14 +66,14 @@ class MyRob(CRobLinkAngs):
                     self.setReturningLed(False)
                 self.wander()
 
-            # if ground == 0 and last_checkpoint == 2:
-            #     # TODO Save time and score
-            #     score: int = self.measures.score
-            #     time: int = self.measures.time
-            #     print(f"Score: {score}; Time: {time}")
-            #
-            # last_checkpoint = ground if ground > 0 else 2
-            # assert 3 > ground > -2, "Incorrect ground value!"
+            if ground == 0 and last_checkpoint == 2:
+                # TODO Save time and score (like the teacher described)
+                score: int = self.measures.score
+                time: int = self.measures.time
+                print(f"Score: {score}; Time: {time}")
+
+            last_checkpoint = ground if ground > 0 else 2
+            assert 3 > ground > -2, "Incorrect ground value!"
 
     def _deduce_linear_velocity(self):
         """
@@ -129,7 +129,7 @@ class MyRob(CRobLinkAngs):
         # TODO adjust this value through trial and error or/and with theoretical reasoning
         coefficient: float = 0.65
 
-        return coefficient * (right - left) ** (1/3)
+        return coefficient * (right - left)
 
     def wander(self):
 
@@ -160,15 +160,11 @@ class Map:
                     if (c + 1) % 3 == 0:
                         if line[c] == '|':
                             self.labMap[row][(c + 1) // 3 * 2 - 1] = '|'
-                        else:
-                            None
             else:  # this line defines horizontal lines
                 for c in range(len(line)):
                     if c % 3 == 0:
                         if line[c] == '-':
                             self.labMap[row][c // 3 * 2] = '-'
-                        else:
-                            None
 
             i = i + 1
 
