@@ -3,6 +3,7 @@ import sys
 from croblink import *
 from math import *
 import xml.etree.ElementTree as ET
+import control_action
 
 CELLROWS = 7
 CELLCOLS = 14
@@ -65,8 +66,23 @@ class MyRob(CRobLinkAngs):
                 self.wander()
 
     def wander(self):
-        #
+        # Initialize ControlAction
+        control = control_action.ControlAction()
+
+        # Determine setPoint (distance moved)
         ...
+        next_move: float = 2.0  # TODO when movement is working, set this as a tuple (x, y)
+
+        # Get feedback value (GPS.x)
+        feedback: float = self.measures.x
+        l: float
+        r: float
+
+        l = r = -control.c_action(set_point=next_move, feedback=feedback)
+
+        # Drive Motors
+        self.driveMotors(lPow=l, rPow=r)
+
 
 class Map:
     def __init__(self, filename):

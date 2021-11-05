@@ -2,10 +2,10 @@ import sys
 
 
 class ControlAction:
-    # PID Constants
+    # PID Constants TODO tweak them later (which ones?)
     _max_u: float = 0.5  # Saturation value for control signal
-    _Kp: float = 1
-    _Ti: float = sys.float_info.max
+    _Kp: float = 0.1
+    _Ti: float = 0.1  # sys.float_info.max
     _Td: float = .0
     _h: float = .05
 
@@ -21,7 +21,7 @@ class ControlAction:
         self.K1: float = -self._Kp * (1 + 2*self._Td/self._h)
         self.K2: float = self._Kp * self._Td/self._h
 
-    def control_action(self, set_point: float, feedback: float, c_type: str = "PID"):
+    def c_action(self, set_point: float, feedback: float, c_type: str = "PID"):
         """
         Python implementation of the "controlAction" function at:
             - https://github.com/nunolau/ciberRatoTools/blob/speedc/robsample/mainRob.c
