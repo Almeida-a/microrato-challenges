@@ -32,8 +32,8 @@ class MyRob(CRobLinkAngs):
 
         while True:
             last_checkpoint: int = -1
-            ground: int = self.measures.ground
             self.readSensors()
+            ground: int = self.measures.ground
 
             if self.measures.endLed:
                 print(self.rob_name + " exiting")
