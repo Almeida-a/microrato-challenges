@@ -64,79 +64,9 @@ class MyRob(CRobLinkAngs):
                     self.setReturningLed(False)
                 self.wander()
 
-    def _deduce_linear_velocity(self):
-        """
-        Based on the input from the obstacle sensors, drive slower if there are close obstacles near the more important
-         ones, and faster the farther it is from said obstacles
-        :return: The scalar value of the linear velocity, where the unit is the robot's diameter
-        """
-        # Radar IDs
-        center_id: int = 0
-        left_id: int = 1
-        right_id: int = 2
-        back_id: int = 3
-        # Get sensors values
-        left = self.measures.irSensor[left_id]
-        right = self.measures.irSensor[right_id]
-        center = self.measures.irSensor[center_id]
-        back = self.measures.irSensor[back_id]
-
-        # TODO These variables are to be adjusted,
-        #  based on whatever seems more adequate, theoretically or in a trial and error approach
-        # The total coefficient's purpose is used to calculate the absolute coefficient of each sensor in the formula
-        total_coefficient: float = 2.0
-        # These are the contribution percentages of each sensor, where
-        #  the closer a sensor is to the obstacle, the slower the robot should be.
-        # Notes on adjusting the parameters:
-        #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
-        #  * The back sensor value should be the smallest (least important one to calculate the linear velocity)
-        cp: float = 0.7 # center
-        lp: float = 0.1  # left
-        rp: float = 0.1  # right
-        bp: float = 1 - (cp + lp + rp)  # back
-        assert 0 <= bp < 1, "Sum of relative obstacle sensor coefficients should equal 1"
-        
-        print(f"left = {left}", end=", ")
-        print(f"right = {right}", end=", ")
-        print(f"center = {center}", end=", ")
-        print(f"back = {back}")
-        return 1 / (total_coefficient * (left * lp
-                                         + right * rp
-                                         + center * cp
-                                         + back * bp))
-
-    def _deduce_rotational_velocity(self):
-        """
-
-        :return: The rotational velocity (in degrees, radians or other units?)
-        """
-        # Radar IDs
-        center_id: int = 0
-        left_id: int = 1
-        right_id: int = 2
-        back_id: int = 3
-        # Get sensors values
-        left = self.measures.irSensor[left_id]
-        right = self.measures.irSensor[right_id]
-        center = self.measures.irSensor[center_id]
-        back = self.measures.irSensor[back_id]
-
-        # TODO adjust this value through trial and error or/and with theoretical reasoning
-        coefficient: float = 0.65
-
-        return coefficient * (right - left)
-
     def wander(self):
-
-        # Alternate movement indicators
-        lin: float = self._deduce_linear_velocity()
-        rot: float = self._deduce_rotational_velocity()
-
-        in_l: float = lin - rot
-        in_r: float = lin + rot
-
-        self.driveMotors(in_l, in_r)
-
+        #
+        ...
 
 class Map:
     def __init__(self, filename):
