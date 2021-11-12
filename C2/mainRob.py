@@ -1,5 +1,8 @@
 import math
 import sys
+
+from typing import Tuple
+
 from croblink import *
 from math import *
 import xml.etree.ElementTree as ET
@@ -12,6 +15,8 @@ CELLCOLS = 14
 class MyRob(CRobLinkAngs):
     def __init__(self, rob_name, rob_id, angles, host):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
+        self.init_pose: dict = {}
+        self.control = control_action.ControlAction()
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
     #  to know if there is a wall on top of cell(i,j) (i in 0..5),
@@ -30,6 +35,10 @@ class MyRob(CRobLinkAngs):
 
         state = 'stop'
         stopped_state = 'run'
+
+        # Get starting pose
+        self.readSensors()
+        self.init_pose: dict = {"x": self.measures.x, "y": self.measures.y, "compass": self.measures.compass}
 
         while True:
             self.readSensors()
@@ -66,19 +75,19 @@ class MyRob(CRobLinkAngs):
                 self.wander()
 
     def wander(self):
-        # Initialize ControlAction
-        control = control_action.ControlAction()
 
         # Determine setPoint (distance moved)
         ...
         next_move: float = 2.0  # TODO when movement is working, set this as a tuple (x, y)
 
         # Get feedback value (GPS.x)
-        feedback: float = self.measures.x
+        initial_value: float = self.init_pose["x"]
+        feedback: float = self.measures.x - initial_value
         l: float
         r: float
 
-        l = r = -control.c_action(set_point=next_move, feedback=feedback)
+        print(f"Feedback: {feedback}.")
+        l = r = self.control.c_action(set_point=next_move, feedback=feedback)
 
         # Drive Motors
         self.driveMotors(lPow=l, rPow=r)
