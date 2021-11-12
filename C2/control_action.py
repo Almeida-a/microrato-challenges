@@ -2,12 +2,12 @@ import sys
 
 
 class ControlAction:
-    # PID Constants TODO tweak them later (which ones?)
-    _max_u: float = 0.5  # Saturation value for control signal
-    _Kp: float = 0.1
-    _Ti: float = 0.1  # sys.float_info.max
-    _Td: float = .0
-    _h: float = .05
+    # PID Constants TODO constants or arguments?
+    _max_u: float = 1.4  # Saturation value for control signal
+    _Kp: float = 0.70  # Kp - proportional control
+    _Ti: float = 10.0  # Ti - integration time
+    _Td: float = .0  # Td - differential time
+    _h: float = .05  # h - sampling interval
 
     def __init__(self):
         # memory for error
@@ -17,9 +17,9 @@ class ControlAction:
         self.u_m1: float = 0
 
         # Aux constants for the PID Controller
-        self.K0: float = self._Kp * (1 + self._h/self._Ti + self._Td/self._h)
-        self.K1: float = -self._Kp * (1 + 2*self._Td/self._h)
-        self.K2: float = self._Kp * self._Td/self._h
+        self.K0: float = self._Kp * (1 + self._h / self._Ti + self._Td / self._h)
+        self.K1: float = -self._Kp * (1 + 2 * self._Td / self._h)
+        self.K2: float = self._Kp * self._Td / self._h
 
     def c_action(self, set_point: float, feedback: float, c_type: str = "PID"):
         """

@@ -1,7 +1,7 @@
 import math
 import sys
 
-from typing import Tuple
+from typing import Dict
 
 from croblink import *
 from math import *
@@ -17,6 +17,7 @@ class MyRob(CRobLinkAngs):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
         self.init_pose: dict = {}
         self.control = control_action.ControlAction()
+        self.target_pose: Dict[str, float] = {"x": 1.0, "y": 0.0, "orientation": 0.0}
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
     #  to know if there is a wall on top of cell(i,j) (i in 0..5),
@@ -27,6 +28,7 @@ class MyRob(CRobLinkAngs):
     def printMap(self):
         for l in reversed(self.labMap):
             print(''.join([str(l) for l in l]))
+
 
     def run(self):
         if self.status != 0:
@@ -74,23 +76,32 @@ class MyRob(CRobLinkAngs):
                     self.setReturningLed(False)
                 self.wander()
 
-    def wander(self):
 
-        # Determine setPoint (distance moved)
-        ...
-        next_move: float = 2.0  # TODO when movement is working, set this as a tuple (x, y)
+
+    def wander(self):
 
         # Get feedback value (GPS.x)
         initial_value: float = self.init_pose["x"]
-        feedback: float = self.measures.x - initial_value
-        l: float
-        r: float
+        feedback: float = (self.measures.x - initial_value) / 2
+        left: float
+        right: float
 
-        print(f"Feedback: {feedback}.")
-        l = r = self.control.c_action(set_point=next_move, feedback=feedback)
+        # Determine setPoint (distance moved)
+        margin: float = 0.1  # 10% margin
+        left_margin = self.target_pose["x"] * (1 - margin)
+        right_margin = self.target_pose["x"] * (1 + margin)
+        # If close enough to the target cell, proceed
+        if left_margin < feedback < right_margin and self.target_pose["x"] < 3:
+            self.target_pose["x"] += 1
+
+        # Debug printing
+        print(f"Feedback: {round(feedback, 3)};\t\t Next move: {self.target_pose['x']}.")
+
+        # Move
+        left = right = self.control.c_action(set_point=self.target_pose['x'], feedback=feedback)
 
         # Drive Motors
-        self.driveMotors(lPow=l, rPow=r)
+        self.driveMotors(lPow=left, rPow=right)
 
 
 class Map:
