@@ -2,14 +2,15 @@ import sys
 
 
 class ControlAction:
-    # PID Constants TODO constants or arguments?
+    # PID Constants
     _max_u: float = 1.4  # Saturation value for control signal
-    _Kp: float = 0.70  # Kp - proportional control
-    _Ti: float = 10.0  # Ti - integration time
-    _Td: float = .0  # Td - differential time
     _h: float = .05  # h - sampling interval
 
-    def __init__(self):
+    def __init__(self, ti: float, td: float, kp: float):
+        # Controller main parameters
+        self._Kp: float = kp  # Kp - proportional control
+        self._Ti: float = ti  # Ti - integration time
+        self._Td: float = td  # Td - differential time
         # memory for error
         self.e_m1: float = 0
         self.e_m2: float = 0

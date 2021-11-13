@@ -1,7 +1,7 @@
 import math
 import sys
 
-from typing import Dict
+from typing import Dict, Tuple, List
 
 from croblink import *
 from math import *
@@ -15,9 +15,13 @@ CELLCOLS = 14
 class MyRob(CRobLinkAngs):
     def __init__(self, rob_name, rob_id, angles, host):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
-        self.init_pose: dict = {}
-        self.control = control_action.ControlAction()
+        # TODO comment describe each of these class variables
+        self.axis: str = "None"
+        self.action: str = "starting"
+        self.init_pose: dict = {}  # Initial gps coordinates
+        self.control = control_action.ControlAction(ti=10.0, td=.0, kp=0.70)
         self.target_pose: Dict[str, float] = {"x": 1.0, "y": 0.0, "orientation": 0.0}
+        self.feedback: Dict[str, float] = {}
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
     #  to know if there is a wall on top of cell(i,j) (i in 0..5),
@@ -29,7 +33,6 @@ class MyRob(CRobLinkAngs):
         for l in reversed(self.labMap):
             print(''.join([str(l) for l in l]))
 
-
     def run(self):
         if self.status != 0:
             print("Connection refused or error")
@@ -40,7 +43,7 @@ class MyRob(CRobLinkAngs):
 
         # Get starting pose
         self.readSensors()
-        self.init_pose: dict = {"x": self.measures.x, "y": self.measures.y, "compass": self.measures.compass}
+        self.init_pose: Dict[str, float] = dict(x=self.measures.x, y=self.measures.y)
 
         while True:
             self.readSensors()
@@ -76,32 +79,127 @@ class MyRob(CRobLinkAngs):
                     self.setReturningLed(False)
                 self.wander()
 
-
-
     def wander(self):
 
-        # Get feedback value (GPS.x)
-        initial_value: float = self.init_pose["x"]
-        feedback: float = (self.measures.x - initial_value) / 2
-        left: float
-        right: float
+        # Update feedback value (GPS + compass)
+        self.feedback = {
+            "x": (self.measures.x - self.init_pose["x"]) / 2,
+            "y": (self.measures.y - self.init_pose["y"]) / 2,
+            # "orientation": self.measures.compass
+        }
 
-        # Determine setPoint (distance moved)
-        margin: float = 0.1  # 10% margin
-        left_margin = self.target_pose["x"] * (1 - margin)
-        right_margin = self.target_pose["x"] * (1 + margin)
         # If close enough to the target cell, proceed
-        if left_margin < feedback < right_margin and self.target_pose["x"] < 3:
-            self.target_pose["x"] += 1
-
-        # Debug printing
-        print(f"Feedback: {round(feedback, 3)};\t\t Next move: {self.target_pose['x']}.")
+        if self.is_micro_action_completed():
+            # Decide next actions (move 1 cell front or turn)
+            #   based on the walls detected
+            self.next_micro_action()
 
         # Move
-        left = right = self.control.c_action(set_point=self.target_pose['x'], feedback=feedback)
+        self.do_micro_action()
+
+    def next_micro_action(self) -> str:
+        """
+                This function should give orders whether to:
+                    * Rotate (how many degrees)
+                    * Move (one cell forward)
+                Based on:
+                    * The obstacle sensors
+                    * The moving mode (explore or go to certain position)
+
+                :return: action order
+                """
+
+        possible_actions: tuple = ("left", "right", "back", "front")
+
+        # TODO Decide what action to take based on the obstacle sensors (and update target)
+        ...
+        # Placeholders until the above algorithm is implemented
+        self.action = "left"
+        self.axis = "turn"
+
+        assert self.action in possible_actions, f"Action \"{self.action}\" not recognized!"
+
+    def do_micro_action(self):
+
+        # Do micro-action based on order
+        # if self.action == "left":
+        #     self.axis = "turn"
+        #     self.target_pose["orientation"] += 90
+        # elif self.action == "right":
+        #     self.axis = "turn"
+        #     self.target_pose["orientation"] -= 90
+        # elif self.action == "back":
+        #     self.axis = "turn"
+        #     self.target_pose["orientation"] += 180
+        # elif self.action == "front":
+        #     # Where is the vehicle faced towards:
+        #     if -0.5 <= self.measures.compass <= 0.5:  # Face right
+        #         self.axis = "x"
+        #         # Front increment
+        #         self.target_pose[self.axis] += 1
+        #     elif 178 <= self.measures.compass <= 182:  # Face left
+        #         self.axis = "x"
+        #         # Front increment
+        #         self.target_pose[self.axis] -= 1
+        #     elif 88 <= self.measures.compass <= 92:  # Face up
+        #         self.axis = "y"
+        #         # Front increment
+        #         self.target_pose[self.axis] += 1
+        #     elif -92 <= self.measures.compass <= -88:  # Face down
+        #         self.axis = "y"
+        #         # Front increment
+        #         self.target_pose[self.axis] -= 1
+
+        assert self.axis != "None", "I don't know what to do!"
+
+        # Debug printing
+        print(f"Feedback: {round(self.feedback[self.axis], 3)};\t\t Next move: {self.target_pose[self.axis]}.")
+
+        # TODO Create controller for each one of the 3 axis (in __init__)
+        power: float = self.control.c_action(set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis])
+        right: float = 0
+        left: float = 0
+
+        if self.axis == "x" or self.axis == "y":
+            right = left = power
+        elif self.axis == "turn":
+            if self.action == "left" or self.action == "back":
+                right = power
+                left = -right
+            elif self.action == "right":
+                left = power
+                right = -left
 
         # Drive Motors
         self.driveMotors(lPow=left, rPow=right)
+
+    def is_micro_action_completed(self) -> bool:
+        """
+        Check if the robot pose is fairly close from its goal position
+        :return: True if robot is in target pose (tolerance margin defines how close it must be).
+            False otherwise.
+        """
+        # Tolerance margin from the target pose
+        margins: Dict[str, float] = dict(x=.1, y=.1, turn=.1)  # margin values can be tuned
+        left_margins: Dict[str, float] = {
+            axis: self.target_pose[axis]*(1-margins[axis]) for axis in margins.keys()
+        }
+        right_margins: Dict[str, float] = {
+            axis: self.target_pose[axis]*(1+margins[axis]) for axis in margins.keys()
+        }
+
+        # Check closeness from the:
+        # * x axis
+        if not (left_margins["x"] < self.feedback["x"] < right_margins["x"]):
+            return False
+        # * y axis
+        if not (left_margins["y"] < self.feedback["y"] < right_margins["y"]):
+            return False
+        # * turn axis (rotation)
+        if not (left_margins["turn"] < self.measures.compass < right_margins["turn"]):
+            return False
+
+        return True
 
 
 class Map:
