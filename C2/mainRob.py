@@ -15,12 +15,20 @@ CELLCOLS = 14
 class MyRob(CRobLinkAngs):
     def __init__(self, rob_name, rob_id, angles, host):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
-        # TODO comment describe each of these class variables
+        # Type of movement that the robot is
+        #  doing (around what axis, e.g.: up/down, sideways or rotation)
         self.axis: str = "None"
+        # Relative movement action that the robot should do
+        #   e.g.: turn left/right/back or go front
         self.action: str = "starting"
         self.init_pose: dict = {}  # Initial gps coordinates
-        self.control = control_action.ControlAction(ti=10.0, td=.0, kp=0.70)
+        # Controllers
+        self.xy_control = control_action.ControlAction(ti=10.0, td=.0, kp=0.70)  # translation
+        self.rot_control = control_action.ControlAction(ti=10.0, td=.0, kp=0.70)  # rotation
+        # Holds the goal target pose for the robot for each movement
+        # This variable complements "axis" and "action"
         self.target_pose: Dict[str, float] = {"x": 1.0, "y": 0.0, "orientation": 0.0}
+        # Holds the relative gps coordinates to the spawn coordinates
         self.feedback: Dict[str, float] = {}
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
@@ -97,7 +105,7 @@ class MyRob(CRobLinkAngs):
         # Move
         self.do_micro_action()
 
-    def next_micro_action(self) -> str:
+    def next_micro_action(self):
         """
                 This function should give orders whether to:
                     * Rotate (how many degrees)
@@ -111,11 +119,18 @@ class MyRob(CRobLinkAngs):
 
         possible_actions: tuple = ("left", "right", "back", "front")
 
-        # TODO Decide what action to take based on the obstacle sensors (and update target)
+        # TODO Decide what action to take based on the obstacle sensors
+        #  and the algorithm (and update target)
+        # if deadend:
+        #   turn or go front (depending on the robot's pose)
+        # else:
+        #   let the mapping algorithm decide
         ...
         # Placeholders until the above algorithm is implemented
         self.action = "left"
         self.axis = "turn"
+        # TODO before implementing the mapping algorithm, script the robot's movements
+        #   in the code for testing
 
         assert self.action in possible_actions, f"Action \"{self.action}\" not recognized!"
 
@@ -153,16 +168,22 @@ class MyRob(CRobLinkAngs):
         assert self.axis != "None", "I don't know what to do!"
 
         # Debug printing
-        print(f"Feedback: {round(self.feedback[self.axis], 3)};\t\t Next move: {self.target_pose[self.axis]}.")
+        print(f"Feedback: {round(self.feedback[self.axis], 3)};"
+              f"\t\t Next move: {self.target_pose[self.axis]}.")
 
-        # TODO Create controller for each one of the 3 axis (in __init__)
-        power: float = self.control.c_action(set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis])
-        right: float = 0
-        left: float = 0
+        power: float = 0
+        right: float = power
+        left: float = power
 
         if self.axis == "x" or self.axis == "y":
+            power = self.xy_control.c_action(
+                set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis]
+            )
             right = left = power
         elif self.axis == "turn":
+            power = self.rot_control.c_action(
+                set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis]
+            )
             if self.action == "left" or self.action == "back":
                 right = power
                 left = -right
