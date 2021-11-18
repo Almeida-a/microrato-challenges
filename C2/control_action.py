@@ -1,9 +1,6 @@
-import sys
-
-
 class ControlAction:
     # PID Constants
-    _max_u: float = 1.4  # Saturation value for control signal
+    _max_u: float = 1.45  # Saturation value for control signal
     _h: float = .05  # h - sampling interval
 
     def __init__(self, ti: float, td: float, kp: float):
@@ -16,7 +13,6 @@ class ControlAction:
         self.e_m2: float = 0
         # memory for the control signal
         self.u_m1: float = 0
-
         # Aux constants for the PID Controller
         self.K0: float = self._Kp * (1 + self._h / self._Ti + self._Td / self._h)
         self.K1: float = -self._Kp * (1 + 2 * self._Td / self._h)
@@ -26,10 +22,11 @@ class ControlAction:
         """
         Python implementation of the "controlAction" function at:
             - https://github.com/nunolau/ciberRatoTools/blob/speedc/robsample/mainRob.c
-        :param set_point:
-        :param feedback:
-        :param c_type:
-        :return:
+        :param set_point: Goal value
+        :param feedback: Real value
+        :param c_type: Type of controller. Default is Proportional Integral Derivative
+        :return: Controller outputs in such a way that, if it is called in a loop like in the do_micro_action
+         in mainRob.py, then over time, the tendency is feedback == set_point
         """
         u: float = 0.0  # Error signal
         e: float  # Control signal
@@ -42,6 +39,9 @@ class ControlAction:
 
             # Compute the control signal
             u = self.u_m1 + self.K0*e + self.K1*self.e_m1 + self.K2*self.e_m2
+
+            # TODO delete this debug printing
+            print(f"Error = {round(e, 3)};\t U = {round(u, 3)}")
 
             # Store values for next iterations
             self.e_m2 = self.e_m1
