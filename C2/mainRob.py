@@ -102,7 +102,6 @@ class MyRob(CRobLinkAngs):
 
     def wander(self):
 
-        # TODO consider commenting the existing info logs (no practical use and make difficult to read log file)
         self.logger.info("Wander Iteration Init")
 
         # Update feedback value (GPS + compass)
@@ -141,14 +140,12 @@ class MyRob(CRobLinkAngs):
                 :return: action order
                 """
 
-        # self.logger.info("Deciding the next micro action...")
-
         possible_actions: tuple = ("left", "right", "back", "front", "finished")
 
         # Placeholders until the above algorithm is implemented
         self.action = "left"
         self.axis = "turn"
-        # TODO Test code
+
         if self.step in [0, 1, 2]:
             self.action = "front"
             self.axis = "x"
@@ -171,8 +168,6 @@ class MyRob(CRobLinkAngs):
         # else:
         #   let the mapping algorithm decide
         ...
-        # TODO before implementing the mapping algorithm, script the robot's movements
-        #   in the code for testing
 
         self.logger.debug(f"Next action: {self.action}, axis: {self.axis}, (debug) step {self.step}")
 
@@ -180,8 +175,6 @@ class MyRob(CRobLinkAngs):
             self.logger.critical(f"Action \"{self.action}\" not recognized!")
 
     def do_micro_action(self):
-
-        # self.logger.info("Preparing to send power values to actuators (wheels)...")
 
         assert self.axis != "None" or self.action == "finished", "I don't know what to do!"
 
