@@ -1,12 +1,12 @@
 class ControlAction:
     # PID Constants
-    _max_u: float = 1.45  # Saturation value for control signal
+    _max_u: float = 0.15  # Saturation value for control signal
     _h: float = .05  # h - sampling interval
 
-    def __init__(self, ti: float, td: float, kp: float):
+    def __init__(self, ki: float, td: float, kp: float):
         # Controller main parameters
         self._Kp: float = kp  # Kp - proportional control
-        self._Ti: float = ti  # Ti - integration time
+        self._Ki: float = ki  # Ti - integration time
         self._Td: float = td  # Td - differential time
         # memory for error
         self.e_m1: float = 0
@@ -14,7 +14,7 @@ class ControlAction:
         # memory for the control signal
         self.u_m1: float = 0
         # Aux constants for the PID Controller
-        self.K0: float = self._Kp * (1 + self._h / self._Ti + self._Td / self._h)
+        self.K0: float = self._Kp * (1 + self._h * self._Ki + self._Td / self._h)
         self.K1: float = -self._Kp * (1 + 2 * self._Td / self._h)
         self.K2: float = self._Kp * self._Td / self._h
 
@@ -39,9 +39,6 @@ class ControlAction:
 
             # Compute the control signal
             u = self.u_m1 + self.K0*e + self.K1*self.e_m1 + self.K2*self.e_m2
-
-            # TODO delete this debug printing
-            print(f"Error = {round(e, 3)};\t U = {round(u, 3)}")
 
             # Store values for next iterations
             self.e_m2 = self.e_m1

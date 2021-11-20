@@ -90,12 +90,12 @@ class MyRob(CRobLinkAngs):
         # Notes on adjusting the parameters:
         #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
         #  * The back sensor value should be the smallest (least important one to calculate the linear velocity)
-        cp: float = 0.7 # center
+        cp: float = 0.7  # center
         lp: float = 0.1  # left
         rp: float = 0.1  # right
         bp: float = 1 - (cp + lp + rp)  # back
         assert 0 <= bp < 1, "Sum of relative obstacle sensor coefficients should equal 1"
-        
+
         print(f"left = {left}", end=", ")
         print(f"right = {right}", end=", ")
         print(f"center = {center}", end=", ")

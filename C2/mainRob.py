@@ -1,16 +1,14 @@
 import logging
 import logging.config
 import math
-import pdb
 import sys
+import xml.etree.ElementTree as ET
+from typing import Dict
+
 import yaml
 
-from typing import Dict, Tuple, List
-
-from croblink import *
-from math import *
-import xml.etree.ElementTree as ET
 import control_action
+from croblink import *
 
 CELLROWS = 7
 CELLCOLS = 14
@@ -24,18 +22,20 @@ class MyRob(CRobLinkAngs):
 
     def __init__(self, rob_name, rob_id, angles, host):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
+        # FIX self.finish exception: (AttributeError: 'MyRob' object has no attribute 'rob_name')
+        self.rob_name = rob_name
         # Logger(s) instantiation
-        self.logger = logging.getLogger("wander_debug")
+        self.logger = logging.getLogger("wander")
         # Type of movement that the robot is
-        #  doing (around what axis, e.g.: up/down, sideways or rotation)
+        #  doing (around what axis, e.g.: up/down (y), sideways (x) or rotation (angle))
         self.axis: str = "None"
         # Relative movement action that the robot should do
         #   e.g.: turn left/right/back or go front
         self.action: str = "starting"
         self.init_pose: dict = {}  # Initial gps coordinates
         # Controllers
-        self.xy_control = control_action.ControlAction(ti=10.0, td=.0, kp=0.70)  # translation
-        self.rot_control = control_action.ControlAction(ti=1.0, td=.2, kp=0.10)  # rotation
+        self.xy_control = control_action.ControlAction(ki=.0, td=.0, kp=12.0)  # translation
+        self.rot_control = control_action.ControlAction(ki=.0, td=.0, kp=0.10)  # rotation
         # Holds the goal target pose for the robot for each movement
         # This variable complements "axis" and "action"
         self.target_pose: Dict[str, float] = {"x": .0, "y": .0, "turn": .0}
@@ -102,16 +102,14 @@ class MyRob(CRobLinkAngs):
 
     def wander(self):
 
-        self.logger.info("Wander Iteration Init")
+        self.logger.debug("Wander Iteration Init")
 
         # Update feedback value (GPS + compass)
         self.feedback = {
-            "x": (self.measures.x - self.init_pose["x"]) / 2,
-            "y": (self.measures.y - self.init_pose["y"]) / 2,
-            "turn": self.measures.compass % 360
+            "x": (self.measures.x - self.init_pose["x"]),
+            "y": (self.measures.y - self.init_pose["y"]),
+            "turn": self.measures.compass
         }
-        # Normalize to this program's standard
-        self.target_pose["turn"] %= 360
 
         self.logger.debug(f"Current position: x={round(self.feedback['x'], 3)}, y={round(self.feedback['y'], 3)},"
                           f" angle={round(self.feedback['turn'], 3)}.")
@@ -149,7 +147,7 @@ class MyRob(CRobLinkAngs):
         if self.step in [0, 1, 2]:
             self.action = "front"
             self.axis = "x"
-            self.target_pose["x"] += 1
+            self.target_pose["x"] += 2
         elif self.step == 3:
             self.action = "right"
             self.axis = "turn"
@@ -157,10 +155,11 @@ class MyRob(CRobLinkAngs):
         elif self.step in [4, 5]:
             self.action = "front"
             self.axis = "y"
-            self.target_pose["y"] -= 1
+            self.target_pose["y"] -= 2
         elif self.step == 6:
-            self.action = "finished"
-            self.axis = "None"
+            # self.action = "finished"
+            # self.axis = "None"
+            self.finish()
         # TODO Decide what action to take based on the obstacle sensors
         #  and the algorithm (and update target)
         # if dead end:
@@ -169,7 +168,10 @@ class MyRob(CRobLinkAngs):
         #   let the mapping algorithm decide
         ...
 
-        self.logger.debug(f"Next action: {self.action}, axis: {self.axis}, (debug) step {self.step}")
+        self.logger.info(f"Next action: {self.action}, axis: {self.axis}, (debug) step {self.step}")
+        self.logger.info(f"Target pose new values: x={self.target_pose['x']}, "
+                         f"y={self.target_pose['y']}, "
+                         f"angle={self.target_pose['turn']}")
 
         if self.action not in possible_actions:
             self.logger.critical(f"Action \"{self.action}\" not recognized!")
@@ -181,32 +183,37 @@ class MyRob(CRobLinkAngs):
         # Debug printing
         self.logger.debug(f"Current axis is {self.axis}")
 
-        power: float = 0
-        right: float = power
-        left: float = power
+        lin: float = 0
+        rot: float = 0
+
+        # Log the error value
+        if not self.action == "finished":
+            error: float = self.target_pose[self.axis] - self.feedback[self.axis]
+            self.logger.debug(f"Controller error: {round(error, 3)} => "
+                              f"target {self.axis} = {self.target_pose[self.axis]}, "
+                              f"actual {self.axis} = {round(self.feedback[self.axis], 3)}")
 
         if self.axis in ["x", "y"]:
-            power = self.xy_control.c_action(
-                set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis]
-            )
-            right = left = abs(power)
+            # lin = self.xy_control.c_action(
+            #     set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis]
+            # )
+            lin = 0.09
+            rot = self.correct_pose()
+            self.logger.debug(f"Linear velocity output: {round(lin, 3)}")
+            self.logger.debug(f"Rotational velocity correction: {round(rot, 3)}")
         elif self.axis == "turn":
-            power = self.rot_control.c_action(
-                set_point=self.target_pose[self.axis], feedback=self.feedback[self.axis]
-            )
-            if self.action == "left" or self.action == "back":
-                right = power
-                left = -power
-            elif self.action == "right":
-                left = power
-                right = -power
+            rot = self.control_rotation()
+            self.logger.debug(f"Rotational velocity output: {round(rot, 3)}")
         elif self.action == "finished":
-            pass  # nop
+            pass  # nop (velocity default is already 0!)
         else:
             raise AssertionError("Unexpected behavior!")
 
         # Drive Motors
-        self.driveMotors(lPow=left, rPow=right)
+        self.driveMotors(
+            lPow=lin-rot/2,
+            rPow=lin+rot/2
+        )
 
     def is_micro_action_complete(self) -> bool:
         """
@@ -214,45 +221,80 @@ class MyRob(CRobLinkAngs):
         :return: True if robot is in target pose (tolerance margin defines how close it must be).
             False otherwise.
         """
-        # self.logger.info("Checking if micro action is complete...")
 
         # Tolerance margins from the target pose
         margins: Dict[str, float] = dict(x=.2, y=.2, turn=.01)  # margin values can be tuned
-        self.logger.debug("Margins are selected to be: "
-                          f"{int(margins['x']*100)}% from x pos, "
-                          f"{int(margins['y']*100)}% from y pos, "
-                          f"{int(margins['turn']*100)}% from angle sin/cos.")
-        left_margins: Dict[str, float] = {
-            axis: self.target_pose[axis] - margins[axis] for axis in ["x", "y"]
-        }
-        right_margins: Dict[str, float] = {
-            axis: self.target_pose[axis] + margins[axis] for axis in ["x", "y"]
-        }
-        if self.target_pose["turn"] in [180, 270]:
-            left_margins["turn"] = -1
-            right_margins["turn"] = -(1 - margins["turn"])
-        elif self.target_pose["turn"] in [0, 90]:
-            left_margins["turn"] = 1 - margins["turn"]
-            right_margins["turn"] = 1
-        else:
-            self.logger.critical("Target pose is of unexpected value!")
-        # E.g.: if the robot is faced north, then sin(angle) ~= 1
-        trign = math.sin if self.target_pose["turn"] in [90.0, 270.0] else math.cos
+
+        trign = math.sin if self.target_pose["turn"] in [90.0, -90.0] else math.cos
+
+        error_x: float = abs(self.feedback["x"] - self.target_pose["x"])
+        error_y: float = abs(self.feedback["y"] - self.target_pose["y"])
+        error_angle: float = abs(
+            trign(math.radians(self.feedback["turn"]))
+            - trign(math.radians(self.target_pose["turn"]))
+        )
 
         # Check closeness from the:
         # * x axis
-        if not (left_margins["x"] <= self.feedback["x"] <= right_margins["x"]):
+        if error_x > margins["x"]:
+            self.logger.debug(f"Not close enough (e = {error_x}) from X set point")
             return False
         # * y axis
-        if not (left_margins["y"] <= self.feedback["y"] <= right_margins["y"]):
+        if error_y > margins["y"]:
+            self.logger.debug(f"Not close enough (e = {error_y}) from Y set point")
             return False
         # * turn axis (rotation)
-        if not (left_margins["turn"] <= trign(math.radians(self.feedback["turn"]))
-                <= right_margins["turn"]):
+        if error_angle > margins["turn"]:
+            self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
             return False
 
         return True
 
+    def control_rotation(self) -> float:
+        """
+        This function is to be called when the robot must turn left/right/back (radius=0)
+        :return:
+        """
+        # Calculate difference between intended angle value and actual angle value (orientation)
+        error = self.target_pose[self.axis] - self.feedback[self.axis]
+        # Coefficients to formula TODO tune
+        a, b = 1, 1/8.5
+        return math.atan(math.radians(error) * a) * b
+
+    def correct_pose(self) -> float:
+        """
+        Based on the robot distance to the center of the cell,
+            calculates the error
+        :return: rotational velocity
+        """
+        # Get target (xt, yt) and current (x, y) coordinates
+        x: float = self.feedback["x"]
+        y: float = self.feedback["y"]
+        xt: float = self.target_pose["x"]
+        yt: float = self.target_pose["y"]
+        # Coefficient
+        k: float = 0.1  # TODO tune
+        # Either north, west, east or south (variable used for logging purpose)
+        direction: str
+        # Deviation from the mid line
+        error: float
+        if 45 <= self.feedback["turn"] < 135:  # NORTH
+            error = - (xt - x)
+            direction = "NORTH"
+        elif -135 >= self.feedback["turn"] or 135 < self.feedback["turn"]:  # WEST
+            error = - (yt - y)
+            direction = "WEST"
+        elif -135 <= self.feedback["turn"] < -45:  # SOUTH
+            error = (xt - x)
+            direction = "SOUTH"
+        else:  # EAST
+            error = (yt - y)
+            direction = "EAST"
+
+        # Log
+        self.logger.debug(f"Going {direction}. Deviating {round(error, 3)} units from the mid line")
+
+        return k * error
 
 class Map:
     def __init__(self, filename):
@@ -302,6 +344,7 @@ for i in range(1, len(sys.argv), 2):
 
 if __name__ == '__main__':
     rob = MyRob(rob_name, pos, [0.0, 60.0, -60.0, 180.0], host)
+    print(f"robname is {rob_name}")
     if mapc is not None:
         rob.setMap(mapc.labMap)
         rob.printMap()

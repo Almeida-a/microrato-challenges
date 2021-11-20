@@ -7,11 +7,13 @@ disable_existing_loggers: true
 formatters:
   simple:
     format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  timeless:
+    format: '%(name)s - %(levelname)s - %(message)s'
 handlers:
   console:
     class: logging.StreamHandler
     level: INFO
-    formatter: simple
+    formatter: timeless
     stream: ext://sys.stdout
   file:
     class: logging.FileHandler
@@ -19,11 +21,11 @@ handlers:
     formatter: simple
     filename: wander.log
 loggers:
-  wander_debug:
-    handlers: [file]
-    propagate: no
-  wander_info:
+  wander:
     handlers: [console]
+    propagate: no
+  wander_file:
+    handlers: [console, file]
     propagate: no
 
 root:
