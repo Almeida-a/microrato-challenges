@@ -157,9 +157,12 @@ class MyRob(CRobLinkAngs):
             self.axis = "y"
             self.target_pose["y"] -= 2
         elif self.step == 6:
-            # self.action = "finished"
-            # self.axis = "None"
+            # Log
+            self.logger.info("Finished the exploration. Exiting...")
+            # Terminate the connection
             self.finish()
+            # Stop
+            self.driveMotors(0, 0)
         # TODO Decide what action to take based on the obstacle sensors
         #  and the algorithm (and update target)
         # if dead end:
@@ -273,7 +276,7 @@ class MyRob(CRobLinkAngs):
         xt: float = self.target_pose["x"]
         yt: float = self.target_pose["y"]
         # Coefficient
-        k: float = 0.1  # TODO tune
+        k: float = .05  # tune instructions: above 0.1 it becomes unstable
         # Either north, west, east or south (variable used for logging purpose)
         direction: str
         # Deviation from the mid line
@@ -344,7 +347,6 @@ for i in range(1, len(sys.argv), 2):
 
 if __name__ == '__main__':
     rob = MyRob(rob_name, pos, [0.0, 60.0, -60.0, 180.0], host)
-    print(f"robname is {rob_name}")
     if mapc is not None:
         rob.setMap(mapc.labMap)
         rob.printMap()
