@@ -247,9 +247,19 @@ class MyRob(CRobLinkAngs):
             self.logger.debug(f"Not close enough (e = {error_y}) from Y set point")
             return False
         # * turn axis (rotation)
-        if error_angle > margins["turn"]:
-            self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
-            return False
+        if self.axis == "turn":
+            if error_angle > margins["turn"] * .25:  # 25% less margin when rotating
+                # We shrank the tolerance here since it is more important for the robot's angle to
+                #   be correct in this case because it is likely starting an action of "going ahead",
+                #   propagating any angle error to larger proportions
+                self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
+                return False
+        else:
+            if error_angle > margins["turn"]:
+                # In this case, the robot is going ahead and the self.correct_pose is already adjusting
+                #   the agent's orientation, so a slightly larger slack is acceptable
+                self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
+                return False
 
         return True
 
