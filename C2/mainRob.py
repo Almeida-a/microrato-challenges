@@ -3,15 +3,23 @@ import logging.config
 import math
 import sys
 import xml.etree.ElementTree as ET
-from typing import Dict
+from typing import Dict, Tuple
 
 import yaml
 
 import control_action
+from C2 import ternary_tree, utils
+from C2.ternary_tree import TreeNode
+from C2.utils import get_key
 from croblink import *
 
 CELLROWS = 7
 CELLCOLS = 14
+
+# Helper variables
+axis_angles: Dict[int, str] = {90: "north", 0: "east", -90: "south", -180: "west"}
+sides: Dict[int, str] = {90: "left", -90: "right", 0: "front", -180: "back"}
+compass_axis: Tuple[str, str, str, str] = ("west", "south", "east", "north")
 
 
 class MyRob(CRobLinkAngs):
@@ -41,8 +49,12 @@ class MyRob(CRobLinkAngs):
         self.target_pose: Dict[str, float] = {"x": .0, "y": .0, "turn": .0}
         # Holds the relative gps coordinates to the spawn coordinates
         self.feedback: Dict[str, float] = {}
-        # TODO delete test variable
-        self.step: int = 0
+        # TreeNode related vars
+        self.root: [TreeNode, None] = None
+        self.node_pointer: [TreeNode, None] = None  # Helper pointer to nodes
+        # Keeping track of where the robot came from (using the tree struct analogy)
+        # -1 -> not set; 0 -> from a child node; 1, 2, 3 -> from parent node's first, second or third branch
+        self.travel_to: int = -1
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
     #  to know if there is a wall on top of cell(i,j) (i in 0..5),
@@ -121,7 +133,6 @@ class MyRob(CRobLinkAngs):
             # Decide next actions (move 1 cell front or turn)
             #   based on the walls detected
             self.next_micro_action()
-            self.step += 1  # TODO delete (test variable)
 
         # Move
         self.do_micro_action()
@@ -129,7 +140,7 @@ class MyRob(CRobLinkAngs):
     def next_micro_action(self):
         """
                 This function should give orders whether to:
-                    * Rotate (how many degrees)
+                    * Rotate (left, right or back)
                     * Move (one cell forward)
                 Based on:
                     * The obstacle sensors
@@ -138,40 +149,80 @@ class MyRob(CRobLinkAngs):
                 :return: action order
                 """
 
-        possible_actions: tuple = ("left", "right", "back", "front", "finished")
+        possible_actions: tuple = ("left", "right", "back", "front")
 
-        # Placeholders until the above algorithm is implemented
-        self.action = "left"
-        self.axis = "turn"
+        # Walls
+        walls: Dict[str, int] = self.create_micro_map(root=False)
 
-        if self.step in [0, 1, 2]:
-            self.action = "front"
-            self.axis = "x"
-            self.target_pose["x"] += 2
-        elif self.step == 3:
-            self.action = "right"
-            self.axis = "turn"
-            self.target_pose["turn"] -= 90
-        elif self.step in [4, 5]:
-            self.action = "front"
-            self.axis = "y"
-            self.target_pose["y"] -= 2
-        elif self.step == 6:
-            # Log
-            self.logger.info("Finished the exploration. Exiting...")
-            # Terminate the connection
-            self.finish()
-            # Stop
-            self.driveMotors(0, 0)
-        # TODO Decide what action to take based on the obstacle sensors
-        #  and the algorithm (and update target)
-        # if dead end:
-        #   turn or go front (depending on the robot's pose)
-        # else:
-        #   let the mapping algorithm decide
-        ...
+        # Assert the dictionary's keys and values are as expected
+        assert set(compass_axis) == set(walls.keys()), "Invalid map!"
 
-        self.logger.info(f"Next action: {self.action}, axis: {self.axis}, (debug) step {self.step}")
+        # Check if this crossroad is the same from last micro-iteration
+        # In this case, target pose can be assumed as GPS values
+        rotated_m1: bool = False
+        if self.node_pointer is not None:
+            rotated_m1 = self.node_pointer.coordinates \
+                                 == (self.target_pose["x"], self.target_pose["y"])
+
+        if not ternary_tree.is_crossroad_or_root(node=self.node_pointer, *walls.values()):
+            # Case where it's not a crossroad
+            self.move_on(walls)
+        else:  # If this cell is a crossroad (multiple pathways to go) or spawn position
+            if not rotated_m1:
+                # TODO assure that rotated_m1 variable works as intended
+
+                # Get a mapping of the surroundings
+                walls = self.create_micro_map(root=True)
+                _map = tuple(walls[axis] for axis in compass_axis)
+
+                # Keep last iteration of self.traveled_from
+                traveled_from: int = self.travel_to
+                if self.root is None:  # First tree iteration
+                    self.root = TreeNode(ways=_map, x=0, y=0)
+                    self.node_pointer = self.root
+                elif traveled_from in (1, 2, 3):  # if gone down to unknown pathways:
+                    # Create new node to insert
+                    x, y = (int(self.target_pose["x"]), int(self.target_pose["y"]))
+                    current_node: TreeNode = TreeNode(ways=_map, x=x, y=y)
+                    # Log
+                    self.logger.debug(f"New node: (x,y)=({x},{y}) and map is {_map}")
+                    # add node as child to previous crossroad's one
+                    self.node_pointer.add_child_node(which=traveled_from, node=current_node)
+                    # Update node_pointer
+                    self.node_pointer = current_node
+                elif traveled_from == 0:
+                    # Update node_pointer
+                    self.node_pointer = self.node_pointer.parent
+                else:
+                    raise AssertionError("Unexpected behavior! Traversed up or down?")
+                # Search for next pathway (next_untraveled indirectly marks the crossroads as
+                #   fully explored if such is the case)
+                axis, self.travel_to = self.node_pointer.next_untraveled()
+                if self.travel_to == 0 and traveled_from == 0:
+                    self.logger.info("Finished exploring.")
+                    self.finish()
+                last_angle: float = float(get_key(dic=axis_angles, value=axis))
+                # Robot was ordered go straight (False if not)
+                straight: bool = last_angle == self.target_pose["turn"]
+                # Define the orders for the robot
+                self.action = sides[int(last_angle - self.target_pose["turn"])]
+                self.target_pose["turn"] = last_angle
+                if not straight:
+                    self.axis = "turn"
+                else:
+                    self.axis = "y" if last_angle in (90, -90) else "x"
+
+                self.logger.debug(f"Next way: {self.target_pose['turn']}")
+            else:
+                # Case where the robot has already rotated
+                # Must go front; Axis (x or y) is the one it's faced to
+                self.action = "front"
+                self.axis = "x" if self.target_pose["turn"] in [0, -180] else "y"
+
+        if self.action == "front":
+            self.target_pose[self.axis] += 2
+
+        self.logger.info(f"Next action: {self.action}, axis: {self.axis}")
         self.logger.info(f"Target pose new values: x={self.target_pose['x']}, "
                          f"y={self.target_pose['y']}, "
                          f"angle={self.target_pose['turn']}")
@@ -214,8 +265,8 @@ class MyRob(CRobLinkAngs):
 
         # Drive Motors
         self.driveMotors(
-            lPow=lin-rot/2,
-            rPow=lin+rot/2
+            lPow=lin - rot / 2,
+            rPow=lin + rot / 2
         )
 
     def is_micro_action_complete(self) -> bool:
@@ -271,7 +322,7 @@ class MyRob(CRobLinkAngs):
         # Calculate difference between intended angle value and actual angle value (orientation)
         error = self.target_pose[self.axis] - self.feedback[self.axis]
         # Coefficients to formula TODO tune
-        a, b = 1, 1/8.5
+        a, b = 1, 1 / 8.5
         return math.atan(math.radians(error) * a) * b
 
     def correct_pose(self) -> float:
@@ -308,6 +359,64 @@ class MyRob(CRobLinkAngs):
         self.logger.debug(f"Going {direction}. Deviating {round(error, 3)} units from the mid line")
 
         return k * error
+
+    def create_micro_map(self, root: bool) -> Dict[str, int]:
+        """
+        This function assumes that the direction the agent faces to is the target pose (since the agent at this
+            phase has just arrived to the goal position, therefore currentPose=targetPose, hence the assumption)
+        Creates a map of the surrounding elements
+        :return: A dictionary in the format: {west: ORIGIN, south, WALL, ...}
+        """
+        # Another name for map...
+        topography: Dict[str, int] = dict()
+
+        # Helper variables
+        side_ids: Dict[str, int] = dict(front=0, left=1, right=2, back=3)
+        _sides: Dict[int, str] = sides.copy()
+        _axis_angles: Dict[int, str] = axis_angles.copy()
+        # Map each relative axis of the robot (left, front, ...) to the actual axis (north, east, ...)
+        sides_to_axis: Dict[str, str] = {}
+        for key, value in _axis_angles.items():
+            sides_to_axis[_sides[key]] = _axis_angles[int(self.target_pose["turn"]) + key]
+
+        # Assign the way the robot came from as ORIGIN (see ternary_tree enums)
+        # Unless the robot has just spawned
+        if not root:
+            back: int = int(utils.opposite_angle(angle=self.target_pose["turn"]))
+            came_from: str = _axis_angles.get(back)
+            topography[came_from] = ternary_tree.ORIGIN
+            # Log
+            self.logger.debug(f"The robot came from {came_from} ({back}).")
+            # Remove the now unused sides
+            _sides.pop(back)
+            _axis_angles.pop(back)
+
+        # Assign the others as walls (WALL) or clear pathway (CLEAR)
+        for key, value in sides.items():
+            # E.g.: topography[left -> north] = WALL or CLEAR from the evaluation of sensor[id_of[left]]
+            dist: float = self.measures.irSensor[side_ids[value]]
+            topography[sides_to_axis[value]] = utils.eval_distance(obstacle_sensor=dist)
+
+        return topography
+
+    def move_on(self, walls: dict):
+        """
+        Guides the robot through closed pathways (must not include dead ends)
+        :return:
+        """
+
+        # Angle associated to the axis (e.g. north -> +90)
+        absolute_angle: int = get_key(axis_angles, get_key(walls, ternary_tree.CLEAR))
+        relative_angle: int = int(self.target_pose["turn"]) + absolute_angle
+        self.action = sides[relative_angle]
+        if self.action == "front":
+            self.axis = "y" if self.target_pose["turn"] in (90, -90) else "x"
+        else:
+            self.axis = "turn"
+            assert not self.action == "back", "Unexpected, car is in dead end!"
+
+        return
+
 
 class Map:
     def __init__(self, filename):
