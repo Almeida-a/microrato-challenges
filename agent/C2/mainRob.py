@@ -8,9 +8,10 @@ from typing import Dict, Tuple
 import yaml
 
 import control_action
-from C2 import ternary_tree, utils
-from C2.ternary_tree import TreeNode
-from C2.utils import get_key
+import utils
+import ternary_tree
+from ternary_tree import TreeNode
+from utils import get_key
 from croblink import *
 
 CELLROWS = 7
@@ -24,7 +25,7 @@ compass_axis: Tuple[str, str, str, str] = ("west", "south", "east", "north")
 
 class MyRob(CRobLinkAngs):
     # Logging configuration load
-    with open('./logging.yml', 'r') as stream:
+    with open('C2/logging.yml', 'r') as stream:
         config = yaml.load(stream, Loader=yaml.FullLoader)
     logging.config.dictConfig(config)
 
@@ -456,7 +457,7 @@ for i in range(1, len(sys.argv), 2):
         host = sys.argv[i + 1]
     elif (sys.argv[i] == "--pos" or sys.argv[i] == "-p") and i != len(sys.argv) - 1:
         pos = int(sys.argv[i + 1])
-    elif (sys.argv[i] == "--robname" or sys.argv[i] == "-p") and i != len(sys.argv) - 1:
+    elif (sys.argv[i] == "--robname" or sys.argv[i] == "-r") and i != len(sys.argv) - 1:
         rob_name = sys.argv[i + 1]
     elif (sys.argv[i] == "--map" or sys.argv[i] == "-m") and i != len(sys.argv) - 1:
         mapc = Map(sys.argv[i + 1])
