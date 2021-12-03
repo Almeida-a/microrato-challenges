@@ -1,0 +1,33 @@
+# Simple log config file
+# Credits:
+#   - https://docs.python.org/3/howto/logging.html
+#   - https://stackoverflow.com/questions/49012123/python3-logging-yaml-configuration
+version: 1
+disable_existing_loggers: true
+formatters:
+  simple:
+    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  timeless:
+    format: '%(name)s - %(levelname)s - %(message)s'
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: timeless
+    stream: ext://sys.stdout
+  file:
+    class: logging.FileHandler
+    level: DEBUG
+    formatter: simple
+    filename: wander.log
+loggers:
+  wander:
+    handlers: [console]
+    propagate: no
+  wander_file:
+    handlers: [console, file]
+    propagate: no
+
+root:
+  level: DEBUG
+  handlers: [console,file]
