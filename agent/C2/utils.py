@@ -1,7 +1,7 @@
 # Utility functions
 from typing import Any
 
-from C2 import ternary_tree
+import ternary_tree
 
 
 def eval_distance(obstacle_sensor: float) -> int:
