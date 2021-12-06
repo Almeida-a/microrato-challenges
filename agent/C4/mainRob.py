@@ -1,4 +1,5 @@
 import logging
+import logging.config
 import sys
 
 import yaml
@@ -6,13 +7,14 @@ import yaml
 from croblink import *
 from math import *
 import xml.etree.ElementTree as ET
+import csv
 
 CELLROWS=7
 CELLCOLS=14
 
 class MyRob(CRobLinkAngs):
     # Logging configuration load
-    with open('C2/logging.yml', 'r') as stream:
+    with open('logging.yml', 'r') as stream:
         config = yaml.load(stream, Loader=yaml.FullLoader)
     logging.config.dictConfig(config)
 
@@ -21,8 +23,8 @@ class MyRob(CRobLinkAngs):
         # Logger
         self.logger = logging.getLogger("mainRob")
 
-    # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2].
-    # to know if there is a wall on top of cell(i,j) (i in 0..5), check if the value of labMap[i*2+1][j*2] is space or not
+    # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2]. to know if there
+    # is a wall on top of cell(i,j) (i in 0..5), check if the value of labMap[i*2+1][j*2] is space or not
     def setMap(self, labMap):
         self.labMap = labMap
 
@@ -38,8 +40,18 @@ class MyRob(CRobLinkAngs):
         state = 'stop'
         stopped_state = 'run'
 
+        f = open('pos.csv', mode='w')
+        pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+
         while True:
             self.readSensors()
+
+            # GPS coordinates
+            x: float = self.measures.x
+            y: float = self.measures.y
+
+            # Write in csv
+            pos_writer.writerow([x, y])
 
             if self.measures.endLed:
                 print(self.rob_name + " exiting")
