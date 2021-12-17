@@ -23,7 +23,9 @@ class MyRob(CRobLinkAngs):
     def __init__(self, rob_name, rob_id, angles, host):
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
         # Logger
-        self.logger = logging.getLogger("mainRob")
+        self.logger = logging.getLogger("mainRob_file")
+        # Calibrate the real GPS values
+        self.spawn_position: Tuple[float, float] = (.0, .0)
         # Keep the wheels' power values from every previous iteration
         self.last_estimated_rot: float = .0
         self.last_estimated_lin: float = .0
@@ -50,6 +52,10 @@ class MyRob(CRobLinkAngs):
         state = 'stop'
         stopped_state = 'run'
 
+        # Get first position
+        self.readSensors()
+        self.spawn_position = (self.measures.x, self.measures.y)
+
         with open('pos.csv', mode='w') as f:
             pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
             pos_writer.writerow(["real_x", "real_y", "real_ang", "est_x", "est_y", "est_ang"])
@@ -58,9 +64,10 @@ class MyRob(CRobLinkAngs):
                 self.readSensors()
 
                 # GPS coordinates
-                x: float = self.measures.x
-                y: float = self.measures.y
+                x: float = self.spawn_position[0] - self.measures.x
+                y: float = self.spawn_position[1] - self.measures.y
                 angle: float = self.measures.compass
+
                 # Estimated coordinates
                 self._calculate_estimated_pose()
 
@@ -79,11 +86,13 @@ class MyRob(CRobLinkAngs):
                     state = 'stop'
 
                 if state == 'run':
-
                     if self.measures.visitingLed:
                         state = 'wait'
                     if self.measures.ground == 0:
                         self.setVisitingLed(True)
+
+                    self.logger.info("Run state")
+
                     self.wander()
                 elif state == 'wait':
                     self.setReturningLed(True)

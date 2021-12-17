@@ -1,5 +1,0 @@
-Commands:
-	$awk -f mapping_score.awk mapping.out a.out
-
-Dicas:
-	* 
