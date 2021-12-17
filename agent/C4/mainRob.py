@@ -64,8 +64,8 @@ class MyRob(CRobLinkAngs):
                 self.readSensors()
 
                 # GPS coordinates
-                x: float = self.spawn_position[0] - self.measures.x
-                y: float = self.spawn_position[1] - self.measures.y
+                x: float = self.measures.x - self.spawn_position[0]
+                y: float = self.measures.y - self.spawn_position[1]
                 angle: float = self.measures.compass
 
                 # Estimated coordinates
@@ -194,7 +194,7 @@ class MyRob(CRobLinkAngs):
         x_m1, y_m1, angle_m1 = self.last_estimated_gps
         lin, rot = (out_r + out_l) / 2, out_r - out_l
 
-        # Calculate new x coordinates
+        # Calculate new x coordinates   
         x: float = x_m1 + lin * np.cos(angle_m1)
         # Calculate new y coordinates
         y: float = y_m1 + lin * np.sin(angle_m1)
