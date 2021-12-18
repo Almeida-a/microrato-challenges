@@ -60,6 +60,8 @@ class MyRob(CRobLinkAngs):
             pos_writer.writerow(["real_x", "real_y", "est_x", "est_y"])
 
             while True:
+                self.logger.info(f"State: {state}")
+
                 self.readSensors()
 
                 # GPS coordinates
@@ -90,9 +92,6 @@ class MyRob(CRobLinkAngs):
                         state = 'wait'
                     if self.measures.ground == 0:
                         self.setVisitingLed(True)
-
-                    self.logger.info("Run state")
-
                     self.wander()
                 elif state == 'wait':
                     self.setReturningLed(True)
@@ -183,7 +182,6 @@ class MyRob(CRobLinkAngs):
 
     def _calculate_estimated_pose(self):
         """
-
         :return: Based on the:
             * estimated effective wheel power values,
             * last estimated pose,
@@ -192,17 +190,17 @@ class MyRob(CRobLinkAngs):
         # Unpack variables
         out_l, out_r = self.last_eff_pow
         x_m1, y_m1 = self.last_estimated_gps
-        lin, rot = (out_r + out_l) / 2, out_r - out_l
+        lin = (out_r + out_l) / 2
+        self.logger.debug(f"Linear velocity: {lin}")
 
         # Calculate new x coordinates
         x: float = x_m1 + lin * np.cos(self.angle_m1)
         # Calculate new y coordinates
         y: float = y_m1 + lin * np.sin(self.angle_m1)
-        # Calculate new angle coordinates
-        angle: float = self.angle_m1 + rot
 
         # Output
-        self.last_estimated_gps = (x, y, angle)
+        self.logger.debug(f"New coordinates: x = {x}, y = {y}.")
+        self.last_estimated_gps = (x, y)
 
     def _calculate_effective_powers(self, in_r: float, in_l: float, std_dev: float = 0):
         """
@@ -218,6 +216,10 @@ class MyRob(CRobLinkAngs):
             g_noise * (in_r + self.last_eff_pow[0]) / 2,
             g_noise * (in_l + self.last_eff_pow[1]) / 2
         )
+
+        self.logger.debug(f"Effective power: "
+                          f"l = {self.last_eff_pow[0]}, "
+                          f"r = {self.last_eff_pow[1]}.")
 
 
 class Map:
