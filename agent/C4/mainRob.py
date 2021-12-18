@@ -26,14 +26,13 @@ class MyRob(CRobLinkAngs):
         self.logger = logging.getLogger("mainRob_file")
         # Calibrate the real GPS values
         self.spawn_position: Tuple[float, float] = (.0, .0)
+        self.angle_m1: float = .0
         # Keep the wheels' power values from every previous iteration
         self.last_estimated_rot: float = .0
         self.last_estimated_lin: float = .0
         self.last_eff_pow: Tuple[float, float] = (.0, .0)  # outL, outR
-        # Keep the last (estimated) coordinate values
-        #   TODO Note: this variable might be corrected at the code in the future: for instance,
-        #       based on the obstacle detectors
-        self.last_estimated_gps: Tuple[float, float, float] = (.0, .0, .0)
+        # Keep the last estimated coordinate values
+        self.last_estimated_gps: Tuple[float, float] = (.0, .0)
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2]. to know if there
     # is a wall on top of cell(i,j) (i in 0..5), check if the value of labMap[i*2+1][j*2] is space or not
@@ -58,7 +57,7 @@ class MyRob(CRobLinkAngs):
 
         with open('pos.csv', mode='w') as f:
             pos_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-            pos_writer.writerow(["real_x", "real_y", "real_ang", "est_x", "est_y", "est_ang"])
+            pos_writer.writerow(["real_x", "real_y", "est_x", "est_y"])
 
             while True:
                 self.readSensors()
@@ -66,13 +65,14 @@ class MyRob(CRobLinkAngs):
                 # GPS coordinates
                 x: float = self.measures.x - self.spawn_position[0]
                 y: float = self.measures.y - self.spawn_position[1]
-                angle: float = self.measures.compass
 
-                # Estimated coordinates
+                # Estimate coordinates
                 self._calculate_estimated_pose()
 
                 # Write in csv
-                pos_writer.writerow([x, y, angle, *self.last_estimated_gps])
+                pos_writer.writerow([x, y, *self.last_estimated_gps])
+
+                # Get value of angle for
 
                 if self.measures.endLed:
                     print(self.rob_name + " exiting")
@@ -191,15 +191,15 @@ class MyRob(CRobLinkAngs):
         """
         # Unpack variables
         out_l, out_r = self.last_eff_pow
-        x_m1, y_m1, angle_m1 = self.last_estimated_gps
+        x_m1, y_m1 = self.last_estimated_gps
         lin, rot = (out_r + out_l) / 2, out_r - out_l
 
-        # Calculate new x coordinates   
-        x: float = x_m1 + lin * np.cos(angle_m1)
+        # Calculate new x coordinates
+        x: float = x_m1 + lin * np.cos(self.angle_m1)
         # Calculate new y coordinates
-        y: float = y_m1 + lin * np.sin(angle_m1)
+        y: float = y_m1 + lin * np.sin(self.angle_m1)
         # Calculate new angle coordinates
-        angle: float = angle_m1 + rot
+        angle: float = self.angle_m1 + rot
 
         # Output
         self.last_estimated_gps = (x, y, angle)
