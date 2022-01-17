@@ -33,10 +33,12 @@ BLIND: int = 50
 ROTATE: int = 60
 # ---------
 
+# Max distance the robot can run in one cycle
+MAX_POW: float = .15
 # Detection threshold (for front and back sensors)
 ANGLE: float = np.deg2rad(60)
-# return the max distance such that the returning measure is referring to the front wall
-THRESHOLD_DIST: float = 1 / cos((pi - ANGLE) / 2.)  # equals ...
+# return the max distance such that the returning measure is referring to the front wall (not a side wall)
+THRESHOLD_DIST: float = 1.0  # 1 / cos((pi - ANGLE) / 2.)  # equals 2.0
 
 
 class MyRob(CRobLinkAngs):
@@ -99,24 +101,23 @@ class MyRob(CRobLinkAngs):
 
                 self.readSensors()
 
-                # GPS coordinates
-                x: float = self.measures.x - spawn_position[0]
-                y: float = self.measures.y - spawn_position[1]
+                if state != "stop":
+                    # GPS coordinates
+                    x: float = self.measures.x - spawn_position[0]
+                    y: float = self.measures.y - spawn_position[1]
 
-                self._update_axis()  # Set axis according to the robot's orientation
+                    self._update_axis()  # Set axis according to the robot's orientation
 
-                # Estimate coordinates based on the movement model
-                self._movement_model()  # Saves estimation at last_shaky_pos
+                    # State transition evaluation
+                    shifted: bool = self._state_transition()
+                    # Log state and real coordinates
+                    self.logger.debug(f"Current state is {self.mov_state}.")
+                    self.logger.debug(f"Current real coordinates are: (x,y) = {(round(x, 3), round(y, 3))}")
+                    # Do stateful correction
+                    self._stateful_correction(state_change=shifted)
 
-                # State transition evaluation
-                shifted: bool = self._state_transition()
-                # Log state
-                self.logger.debug(f"Current state is {self.mov_state}.")
-                # Do stateful correction
-                self._stateful_correction(state_change=shifted)
-
-                # Write in csv
-                pos_writer.writerow([x, y, *self.last_corr_pos])
+                    # Write in csv
+                    pos_writer.writerow([x, y, *self.last_corr_pos])
 
                 # Get value of angle for
 
@@ -154,6 +155,11 @@ class MyRob(CRobLinkAngs):
 
                 # Keep values of sensor as memory for the next loop iteration
                 self.sensors_m1 = self.measures.irSensor
+                # Keep last cycle's angle value
+                self.angle_m1 = self.measures.compass
+                # # TODO deprecate, as this seems redundant
+                # self.last_mm_pos = self.last_corr_pos
+                # ...
 
     # TODO Deprecate
     def _deduce_linear_velocity(self):
@@ -231,15 +237,16 @@ class MyRob(CRobLinkAngs):
         out_l, out_r = self.last_eff_pow
         x_m1, y_m1 = self.last_corr_pos
         lin = (out_r + out_l) / 2
-        self.logger.debug(f"Linear velocity: {lin}")
+        self.logger.debug(f"Linear velocity: {round(lin, 3)}")
 
         # Calculate new x coordinates
-        x: float = x_m1 + lin * np.cos(self.angle_m1)
+        x: float = x_m1 + lin * np.cos(np.radians(self.angle_m1))
         # Calculate new y coordinates
-        y: float = y_m1 + lin * np.sin(self.angle_m1)
+        y: float = y_m1 + lin * np.sin(np.radians(self.angle_m1))
 
+        self.logger.debug(f"New m.m. coordinates: x = {round(x, 3)}, y = {round(y, 3)},"
+                          f" with angle = {round(self.measures.compass, 3)}.")
         # Output
-        self.logger.debug(f"New coordinates: x = {x}, y = {y}.")
         self.last_mm_pos = (x, y)
 
     def _calculate_effective_powers(self, in_r: float, in_l: float, std_dev: float = 0):
@@ -251,15 +258,22 @@ class MyRob(CRobLinkAngs):
         # add gaussian filter (default std_dev=0)
         g_noise: float = np.random.normal(1, std_dev)
 
+        # Normalize in_{l,r} to their max power if applicable
+        in_l = in_l if in_l <= MAX_POW else MAX_POW
+        in_r = in_r if in_r <= MAX_POW else MAX_POW
+
         # Output
         self.last_eff_pow = (
             g_noise * (in_r + self.last_eff_pow[0]) / 2,
             g_noise * (in_l + self.last_eff_pow[1]) / 2
         )
 
+        self.logger.debug("Directed power: "
+                          f"inL = {in_l}, "
+                          f"inR = {in_r}.")
         self.logger.debug(f"Effective power: "
-                          f"l = {self.last_eff_pow[0]}, "
-                          f"r = {self.last_eff_pow[1]}.")
+                          f"outL = {self.last_eff_pow[0]}, "
+                          f"outR = {self.last_eff_pow[1]}.")
 
     def _front_info(self) -> bool:
         return self._vertical_perception(CENTER_ID)
@@ -285,24 +299,27 @@ class MyRob(CRobLinkAngs):
     def _update_axis(self):
         # Evaluate if N/S/E/W, then update axis and other variables as needed
         orientation: str = self.get_orientation_axis()
+
+        self.logger.debug(f"Current axis: {orientation}")
+
         if orientation in ("NORTH", "SOUTH"):
             self.axis = Y
-        self.axis = X
+        else:
+            self.axis = X
 
     def get_orientation_axis(self) -> str:
 
         orientation: str
 
         if -45 < self.measures.compass <= 45:
-            orientation = "WEST"
+            orientation = "EAST"
         elif -135 < self.measures.compass <= -45:
             orientation = "SOUTH"
         elif 45 < self.measures.compass <= 135:
             orientation = "NORTH"
         else:  # Below -135 or above 135
-            orientation = "EAST"
+            orientation = "WEST"
 
-        self.logger.debug(f"Current axis: {orientation}")
         return orientation
 
     def _state_transition(self) -> bool:
@@ -312,15 +329,17 @@ class MyRob(CRobLinkAngs):
         """
         # Holds information about which walls of which sides are in range (True)
         #   or out of range (False)
-        dists = dict(left=1/self.measures.irSensor[LEFT_ID],
-                     right=1/self.measures.irSensor[RIGHT_ID],
-                     front=1/self.measures.irSensor[CENTER_ID],
-                     back=1/self.measures.irSensor[BACK_ID])
+        dists = dict(left=1 / self.measures.irSensor[LEFT_ID],
+                     right=1 / self.measures.irSensor[RIGHT_ID],
+                     front=1 / self.measures.irSensor[CENTER_ID],
+                     back=1 / self.measures.irSensor[BACK_ID])
+
         self.logger.debug("Obstacle sensors distances: "
                           f"C={round(dists['front'], 3)}, "
                           f"B={round(dists['back'], 3)}, "
                           f"L={round(dists['left'], 3)}, "
                           f"R={round(dists['right'], 3)}")
+
         walls: Dict[str, bool] = dict(
             front=self._front_info(), back=self._back_info(),
             side=dists['right'] < .5 or dists['left'] < .5
@@ -398,10 +417,11 @@ class MyRob(CRobLinkAngs):
         elif self.mov_state == ROTATE:
             # Rotate until angle is close enough to its target value
             # Go back to START when that condition is passed
-            margin: float = 10.0  # 10 degrees margin
-            if abs(self.measures.compass - self.target_orientation) < margin:
+            margin: float = 20.0  # degrees of margin
+            if abs(self.measures.compass - self.target_orientation) < margin or \
+                    self.lin_m1 > .25:
                 self.mov_state = START
-                return True
+                return self._state_transition()
             return False
         else:
             self.logger.critical(f"Unexpected state: {self.mov_state}.")
@@ -412,12 +432,17 @@ class MyRob(CRobLinkAngs):
          the state of the robot in its straight run
         :return:
         """
-        # Contribution weight of, respectively, M.M. and sensors
-        p1, p2 = .25, .75
+
+        # TUNABLE parameters
+        # Relative Contribution weight of, respectively, M.M. and sensors
+        p1, p2 = .75, .25
+        # Absolute contribution weight of sensors based estimation
+        p2_a: float = .7
+
         # Run movement model
         self._movement_model()
+
         # Case:
-        # TODO Sub-optimal code. When/If possible, optimize it
         # Complementary axis oscillations are not being taken into account TODO bear this in mind
         if self.mov_state in (BACK, FRONT):
             sensor_id = BACK_ID if self.mov_state == BACK else CENTER_ID
@@ -430,7 +455,7 @@ class MyRob(CRobLinkAngs):
             mm_diff = tuple(
                 [self.last_mm_pos[i] - self.last_corr_pos[i] for i in (0, 1)]
             )
-            self.logger.debug(f"Movement model update: (x, y) = ({mm_diff})")
+            self.logger.debug(f"Movement model update: (x, y) = {mm_diff}")
 
             # check differences from current and last back sensor value
             #   and mend
@@ -441,12 +466,18 @@ class MyRob(CRobLinkAngs):
             mult1: int = -1 if self.get_orientation_axis() in ("WEST", "SOUTH") else 1
             mult2: int = -1 if self.mov_state == FRONT else 1
 
-            sensor_diff: float = mult1 * mult2 * (1 / self.measures.irSensor[sensor_id] - 1 / self.sensors_m1[sensor_id])
-            self.logger.debug(f"Sensor diff update: ({'y' if self.axis == 1 else 'x'}) = ({sensor_diff})")
+            sensor_diff: float = mult1 * mult2 * (
+                    1 / self.measures.irSensor[sensor_id] - 1 / self.sensors_m1[sensor_id])
 
-            self.last_corr_pos[self.axis] += mm_diff[self.axis] * p1 + sensor_diff * p2
-            # Complementary angle is obtained uniquely from the M.M.
-            self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
+            # # Makes no sense to say that the agent ran more than .15 units in one cycle
+            # if abs(sensor_diff) > MAX_POW:
+            #     sensor_diff = MAX_POW if sensor_diff > 0 else -MAX_POW
+
+            self.logger.debug(f"Sensor diff update: ({'y' if self.axis == Y else 'x'}) = ({sensor_diff})")
+
+            self.last_corr_pos[self.axis] += mm_diff[self.axis] * p1 + sensor_diff * p2 * p2_a
+            # # Complementary angle is obtained uniquely from the M.M.
+            # self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
         elif self.mov_state == SIDE:
             # Since this is a more complex and error-prone position estimation,
             # Reduce its contribution weight
@@ -455,16 +486,25 @@ class MyRob(CRobLinkAngs):
             # and mend
             # How far away from the wall(s) the robot is
             offset: float = .4  # or calculate based on the robot's position
-            #
+
+            # Formula for estimating a side sensor based position estimation
+            # This assumes the obstacle sensors are at the exact side wing of the robot, which is wrong,
+            #   it is 60 degrees deviated from the front sensor, not 90
             diff_sides = tuple(
-                np.sqrt(self.measures.irSensor[side] ** 2 - offset ** 2) for side in (LEFT_ID, RIGHT_ID)
+                np.sqrt((1 / self.measures.irSensor[side]) ** 2 - offset ** 2) for side in (LEFT_ID, RIGHT_ID)
             )
+
+            self.logger.debug("Side correction estimation: ")
+
             # TODO continue here the SIDE state corrections...
             # 100% M.M. for now...
             self.last_corr_pos = list(self.last_mm_pos)
         elif self.mov_state == BLIND:
             # Movement model 100% weighted estimation
             self.last_corr_pos = list(self.last_mm_pos)
+            return
+        elif self.mov_state == ROTATE:
+            # No-op
             return
         else:
             # Error: state not covered
