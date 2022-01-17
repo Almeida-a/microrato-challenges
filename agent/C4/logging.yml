@@ -12,11 +12,12 @@ formatters:
 handlers:
   console:
     class: logging.StreamHandler
-    level: INFO
+    level: WARNING
     formatter: timeless
     stream: ext://sys.stdout
   file:
     class: logging.FileHandler
+    mode: w
     level: DEBUG
     formatter: simple
     filename: wander.log
