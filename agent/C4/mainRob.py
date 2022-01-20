@@ -38,8 +38,9 @@ MAX_POW: float = .15
 # Detection threshold (for front and back sensors)
 ANGLE: float = np.deg2rad(60)
 # return the max distance such that the returning measure is referring to the front wall (not a side wall)
-THRESHOLD_DIST: float = 1.0  # 1 / cos((pi - ANGLE) / 2.)  # equals 2.0
-
+THRESHOLD_DIST: float = 1 / cos((pi - ANGLE) / 2.)  # equals 2.0
+THRESH_INHIBITOR: float = .5
+THRESHOLD_DIST *= THRESH_INHIBITOR
 
 class MyRob(CRobLinkAngs):
     # Logging configuration load
@@ -65,7 +66,7 @@ class MyRob(CRobLinkAngs):
         # Straight run's state holder variables
         self.mov_state: int = START
         # Last sensor value (either back, center or side*)
-        self.sensors_m1: List[float] = []
+        self.sensors_m1: List[float] = [-1., -1., -1., -1.]
         # Target orientation value (in degrees)
         self.target_orientation: int = 0
         # Keep the last not-corrected pose estimation (uncertain/shaky certainty)
@@ -108,13 +109,11 @@ class MyRob(CRobLinkAngs):
 
                     self._update_axis()  # Set axis according to the robot's orientation
 
-                    # State transition evaluation
-                    shifted: bool = self._state_transition()
                     # Log state and real coordinates
                     self.logger.debug(f"Current state is {self.mov_state}.")
                     self.logger.debug(f"Current real coordinates are: (x,y) = {(round(x, 3), round(y, 3))}")
                     # Do stateful correction
-                    self._stateful_correction(state_change=shifted)
+                    self._stateless_correction()
 
                     # Write in csv
                     pos_writer.writerow([x, y, *self.last_corr_pos])
@@ -154,12 +153,13 @@ class MyRob(CRobLinkAngs):
                     self.wander()
 
                 # Keep values of sensor as memory for the next loop iteration
-                self.sensors_m1 = self.measures.irSensor
+                for j, elem in enumerate(self.measures.irSensor):
+                    if j in (BACK_ID, CENTER_ID) and not self._vertical_wall(j):
+                        self.sensors_m1[j] = -1.
+                    else:
+                        self.sensors_m1[j] = elem
                 # Keep last cycle's angle value
                 self.angle_m1 = self.measures.compass
-                # # TODO deprecate, as this seems redundant
-                # self.last_mm_pos = self.last_corr_pos
-                # ...
 
     # TODO Deprecate
     def _deduce_linear_velocity(self):
@@ -201,8 +201,6 @@ class MyRob(CRobLinkAngs):
         # Get sensors values
         left = self.measures.irSensor[LEFT_ID]
         right = self.measures.irSensor[RIGHT_ID]
-        center = self.measures.irSensor[CENTER_ID]
-        back = self.measures.irSensor[BACK_ID]
 
         # tune
         coefficient: float = 0.65
@@ -276,12 +274,12 @@ class MyRob(CRobLinkAngs):
                           f"outR = {self.last_eff_pow[1]}.")
 
     def _front_info(self) -> bool:
-        return self._vertical_perception(CENTER_ID)
+        return self._vertical_wall(CENTER_ID)
 
     def _back_info(self) -> bool:
-        return self._vertical_perception(BACK_ID)
+        return self._vertical_wall(BACK_ID)
 
-    def _vertical_perception(self, obs_id: int) -> bool:
+    def _vertical_wall(self, obs_id: int) -> bool:
         """
         Term "True detection" means that the front/back wall is reachable to the respective sensor
         :return: Information about the robot's front/back obstacles: if it is a true detection,
@@ -322,194 +320,62 @@ class MyRob(CRobLinkAngs):
 
         return orientation
 
-    def _state_transition(self) -> bool:
-        """
-
-        :return: When next state is determined, return True if it is different from current
-        """
-        # Holds information about which walls of which sides are in range (True)
-        #   or out of range (False)
-        dists = dict(left=1 / self.measures.irSensor[LEFT_ID],
-                     right=1 / self.measures.irSensor[RIGHT_ID],
-                     front=1 / self.measures.irSensor[CENTER_ID],
-                     back=1 / self.measures.irSensor[BACK_ID])
-
-        self.logger.debug("Obstacle sensors distances: "
-                          f"C={round(dists['front'], 3)}, "
-                          f"B={round(dists['back'], 3)}, "
-                          f"L={round(dists['left'], 3)}, "
-                          f"R={round(dists['right'], 3)}")
-
-        walls: Dict[str, bool] = dict(
-            front=self._front_info(), back=self._back_info(),
-            side=dists['right'] < .5 or dists['left'] < .5
-        )  # Checks if the walls are 'within reach'
-        self.logger.debug(f"Walls reachability info: {walls}")
-
-        # Transition based on: current state and on sensors (Mealy Machine)
-        # TODO If/When possible, optimize the following state transition process
-        if self.mov_state == START:
-            # Check eligible states: BACK -> FRONT -> SIDE -> BLIND
-            if walls["back"]:
-                self.mov_state = BACK
-            elif walls["front"]:
-                self.mov_state = FRONT
-            elif walls["side"]:
-                self.mov_state = SIDE
-            else:
-                self.mov_state = BLIND
-            return True
-        elif self.mov_state == BACK:
-            # back wall in range
-            if not walls["back"]:
-                # - Going above the range of "sight" of the back wall to the back sensor
-                if walls["front"]:
-                    # - Detecting front walls -> FRONT
-                    self.mov_state = FRONT
-                elif walls["side"]:
-                    # - Detecting side walls (>0.4 cells of distance) -> SIDE
-                    self.mov_state = SIDE
-                else:
-                    # - Else -> BLIND
-                    self.mov_state = BLIND
-                return True
-            # If back wall is still in range, no state change is needed
-            return False
-        elif self.mov_state == FRONT:
-            # front wall in range
-            if self.measures.irSensor[CENTER_ID] > 2.5:
-                # - Getting too close to the front wall
-                #   -> ROTATE (and complementary decide where to)
-                self.mov_state = ROTATE
-                return True
-            #   - Else -> FRONT
-            return False
-        elif self.mov_state == SIDE:
-            # side state: (-> ROTATE/FRONT/BLIND)
-            if walls["front"]:
-                # - Start detecting a front wall -> FRONT
-                self.mov_state = FRONT
-                return True
-            elif abs(self.target_orientation - self.measures.compass) > 45:
-                # Difference being more than 45 means that the
-                #   algorithm has changed the orientation, and thus,
-                #   decided that a rotation must be carried out
-                self.mov_state = ROTATE
-                return True
-            elif self.measures.irSensor[LEFT_ID] > 2.3 and self.measures.irSensor[RIGHT_ID] > 2.3:
-                # When side detection stagnates (to ~0.4 diameters) -> BLIND
-                self.mov_state = BLIND
-                return True
-            # Else -> maintain SIDE state
-            return False
-        elif self.mov_state == BLIND:
-            # blind state: (-> BLIND/SIDE/FRONT)
-            if walls["side"]:
-                # Start detecting any side wall -> SIDE
-                self.mov_state = SIDE
-                return True
-            elif walls["front"]:
-                # Start detecting front wall -> FRONT
-                self.mov_state = FRONT
-                return True
-            # Else -> maintain BLIND state
-            return False
-        elif self.mov_state == ROTATE:
-            # Rotate until angle is close enough to its target value
-            # Go back to START when that condition is passed
-            margin: float = 20.0  # degrees of margin
-            if abs(self.measures.compass - self.target_orientation) < margin or \
-                    self.lin_m1 > .25:
-                self.mov_state = START
-                return self._state_transition()
-            return False
-        else:
-            self.logger.critical(f"Unexpected state: {self.mov_state}.")
-
-    def _stateful_correction(self, state_change: bool):
-        """
-        Adjusts the position estimation based on the correction, itself based on
-         the state of the robot in its straight run
-        :return:
-        """
+    def _stateless_correction(self):
 
         # TUNABLE parameters
         # Relative Contribution weight of, respectively, M.M. and sensors
-        p1, p2 = .75, .25
+        p1, p2 = .33, .67
         # Absolute contribution weight of sensors based estimation
-        p2_a: float = .7
+        inhibitor: float = 1.0
 
         # Run movement model
         self._movement_model()
 
+        # Get walls info into variable
+        walls = dict(front=self._front_info(), back=self._back_info())
+
         # Case:
         # Complementary axis oscillations are not being taken into account TODO bear this in mind
-        if self.mov_state in (BACK, FRONT):
-            sensor_id = BACK_ID if self.mov_state == BACK else CENTER_ID
-            if state_change:
-                # On first instance,
-                #   only estimate from M.M. (since there is no valid "memory" sensor values)
-                self.last_corr_pos = list(self.last_mm_pos)
-                return
-            # Get movement model estimated position change
-            mm_diff = tuple(
-                [self.last_mm_pos[i] - self.last_corr_pos[i] for i in (0, 1)]
-            )
-            self.logger.debug(f"Movement model update: (x, y) = {mm_diff}")
 
-            # check differences from current and last back sensor value
-            #   and mend
-            # But first, assert that axis is either X or Y (0 or 1)
-            assert self.axis in (X, Y), "self.axis value is invalid!"
+        # Get movement model estimated position change
+        mm_diff = tuple(
+            [self.last_mm_pos[i] - self.last_corr_pos[i] for i in (0, 1)]
+        )
+        self.logger.debug(f"Movement model update: (x, y) = {mm_diff}")
 
-            # Sensors update estimation
-            mult1: int = -1 if self.get_orientation_axis() in ("WEST", "SOUTH") else 1
-            mult2: int = -1 if self.mov_state == FRONT else 1
+        # check differences from current and last back sensor value
+        #   and mend
+        # But first, assert that axis is either X or Y (0 or 1)
+        assert self.axis in (X, Y), "self.axis value is invalid!"
 
-            sensor_diff: float = mult1 * mult2 * (
-                    1 / self.measures.irSensor[sensor_id] - 1 / self.sensors_m1[sensor_id])
+        # Sensors update estimation
+        mult1: int = -1 if self.get_orientation_axis() in ("WEST", "SOUTH") else 1
 
-            # # Makes no sense to say that the agent ran more than .15 units in one cycle
-            # if abs(sensor_diff) > MAX_POW:
-            #     sensor_diff = MAX_POW if sensor_diff > 0 else -MAX_POW
-
-            self.logger.debug(f"Sensor diff update: ({'y' if self.axis == Y else 'x'}) = ({sensor_diff})")
-
-            self.last_corr_pos[self.axis] += mm_diff[self.axis] * p1 + sensor_diff * p2 * p2_a
-            # # Complementary angle is obtained uniquely from the M.M.
-            # self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
-        elif self.mov_state == SIDE:
-            # Since this is a more complex and error-prone position estimation,
-            # Reduce its contribution weight
-            p1, p2 = 0.9, 0.1
-            # check differences
-            # and mend
-            # How far away from the wall(s) the robot is
-            offset: float = .4  # or calculate based on the robot's position
-
-            # Formula for estimating a side sensor based position estimation
-            # This assumes the obstacle sensors are at the exact side wing of the robot, which is wrong,
-            #   it is 60 degrees deviated from the front sensor, not 90
-            diff_sides = tuple(
-                np.sqrt((1 / self.measures.irSensor[side]) ** 2 - offset ** 2) for side in (LEFT_ID, RIGHT_ID)
-            )
-
-            self.logger.debug("Side correction estimation: ")
-
-            # TODO continue here the SIDE state corrections...
-            # 100% M.M. for now...
-            self.last_corr_pos = list(self.last_mm_pos)
-        elif self.mov_state == BLIND:
-            # Movement model 100% weighted estimation
-            self.last_corr_pos = list(self.last_mm_pos)
-            return
-        elif self.mov_state == ROTATE:
-            # No-op
-            return
+        # Evaluate front wall
+        if walls["front"] and self.sensors_m1[CENTER_ID] != -1:
+            sensor_diff_front: float = mult1 * - (
+                1 / self.measures.irSensor[CENTER_ID] - 1 / self.sensors_m1[CENTER_ID])
         else:
-            # Error: state not covered
-            self.logger.critical(f"Unexpected state: {self.mov_state}")
-            return
+            sensor_diff_front = 0.
+
+        # Evaluate back wall
+        if walls["back"] and self.sensors_m1[BACK_ID] != -1:
+            sensor_diff_back: float = mult1 * (
+                    1 / self.measures.irSensor[BACK_ID] - 1 / self.sensors_m1[BACK_ID])
+        else:
+            sensor_diff_back = 0.
+
+        # Average the result (if neither found a wall, result will be 0)
+        sensor_diff: float = (sensor_diff_front + sensor_diff_back) / 2
+
+        self.logger.debug(f"Sensor diff update: ({'y' if self.axis == Y else 'x'}) = ({sensor_diff})")
+
+        if sensor_diff == 0:  # No back or front walls detected
+            p1 = 1.
+        self.last_corr_pos[self.axis] += mm_diff[self.axis] * p1 + sensor_diff * p2 * inhibitor
+
+        # # Complementary angle is obtained uniquely from the M.M.
+        # self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
 
 
 class Map:
