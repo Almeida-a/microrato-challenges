@@ -3,44 +3,50 @@ import logging.config
 import sys
 
 import yaml
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Union
 
+from agent.C4 import utils
 from croblink import *
 import xml.etree.ElementTree as ET
 import csv
 import numpy as np
-from numpy import cos, pi
+from numpy import cos, sin, pi
 
 CELLROWS = 7
 CELLCOLS = 14
 
-# --Enums--
+# -------Enums-------
 # Radar IDs
 CENTER_ID: int = 0
 LEFT_ID: int = 1
 RIGHT_ID: int = 2
 BACK_ID: int = 3
-# Movement mode
-X: int = 0
-Y: int = 1
-ROT: int = 2  # Deprecate?
-# Robot movement states
-START: int = 10
-BACK: int = 20
-FRONT: int = 30
-SIDE: int = 40
-BLIND: int = 50
-ROTATE: int = 60
-# ---------
+# Movement axis
+X: int = 10
+Y: int = 20
+ROT: int = 30
+# Crossroads passages
+EXPLORED: int = 100
+UNEXPLORED: int = 200
+ORIGIN: int = 300
+WALL: int = 400
+# Explore modes
+EXPLORE: int = 110
+RETURN: int = 220
+# -------------------
+
+POSSIBLE_MOVEMENT_TYPES: tuple = ("explore", "return")
+POSSIBLE_ACTIONS: tuple = ("front", "right", "back", "left", "finished")  # Discard start state
 
 # Max distance the robot can run in one cycle
 MAX_POW: float = .15
 # Detection threshold (for front and back sensors)
-ANGLE: float = np.deg2rad(60)
+THRESH_ANGLE: float = np.deg2rad(60)
 # return the max distance such that the returning measure is referring to the front wall (not a side wall)
-THRESHOLD_DIST: float = 1 / cos((pi - ANGLE) / 2.)  # equals 2.0
+THRESHOLD_DIST: float = 1 / cos((pi - THRESH_ANGLE) / 2.)  # equals 2.0
 THRESH_INHIBITOR: float = .5
 THRESHOLD_DIST *= THRESH_INHIBITOR
+
 
 class MyRob(CRobLinkAngs):
     # Logging configuration load
@@ -58,17 +64,26 @@ class MyRob(CRobLinkAngs):
         self.lin_m1: float = .0
         self.last_eff_pow: Tuple[float, float] = (.0, .0)  # outL, outR
 
+        # Movement
+        self.target_pose: Dict[int, int] = {X: 0, Y: 0, ROT: 0}
+
+        # Exploration
+        # Micro-action command
+        self.action: str = "start"
+        self.next_action: str = ""
+        #
+        self.explore_mode: int = EXPLORED
+        # Associates a crossroad's center coordinates to the crossroads where they lead to
+        # e.g.: (x, y) -> {north=(x1, y1), east=ORIGIN, west=(x2, y2), south=EXPLORED}
+        self.crossroads: Dict[Tuple[int, int], Dict[str, Union[Tuple[int, int], int]]] = {}
+
         # Correction model
         # Hold position estimation with M.M. + with
         self.last_corr_pos: List[float, float] = [.0, .0]
         # Axis - can be X, Y or ROT
         self.axis: int = -1
-        # Straight run's state holder variables
-        self.mov_state: int = START
         # Last sensor value (either back, center or side*)
         self.sensors_m1: List[float] = [-1., -1., -1., -1.]
-        # Target orientation value (in degrees)
-        self.target_orientation: int = 0
         # Keep the last not-corrected pose estimation (uncertain/shaky certainty)
         self.last_mm_pos: Tuple[float, float] = .0, .0
 
@@ -98,29 +113,9 @@ class MyRob(CRobLinkAngs):
             pos_writer.writerow(["real_x", "real_y", "est_x", "est_y"])
 
             while True:
-                self.logger.info(f"State: {state}")
-
                 self.readSensors()
 
-                if state != "stop":
-                    # GPS coordinates
-                    x: float = self.measures.x - spawn_position[0]
-                    y: float = self.measures.y - spawn_position[1]
-
-                    self._update_axis()  # Set axis according to the robot's orientation
-
-                    # Log state and real coordinates
-                    self.logger.debug(f"Current state is {self.mov_state}.")
-                    self.logger.debug(f"Current real coordinates are: (x,y) = {(round(x, 3), round(y, 3))}")
-                    # Do stateful correction
-                    self._stateless_correction()
-
-                    # Write in csv
-                    pos_writer.writerow([x, y, *self.last_corr_pos])
-
-                # Get value of angle for
-
-                if self.measures.endLed:
+                if self.measures.endLed is True:
                     print(self.rob_name + " exiting")
                     quit()
 
@@ -130,6 +125,24 @@ class MyRob(CRobLinkAngs):
                 if state != 'stop' and self.measures.stop:
                     stopped_state = state
                     state = 'stop'
+
+                self.logger.info(f"State: {state}")
+
+                # Makes no sense to evaluate coordinates change when the robot is rotating
+                if state != "stop" and self.axis in (X, Y):
+                    # GPS coordinates
+                    x: float = self.measures.x - spawn_position[0]
+                    y: float = self.measures.y - spawn_position[1]
+
+                    self._update_axis()  # Set axis according to the robot's orientation
+
+                    # Log state and real coordinates
+                    self.logger.debug(f"Current real coordinates are: (x,y) = {(round(x, 3), round(y, 3))}")
+                    # Do stateful correction
+                    self._stateless_correction()
+
+                    # Write in csv
+                    pos_writer.writerow([x, y, *self.last_corr_pos])
 
                 if state == 'run':
                     if self.measures.visitingLed:
@@ -161,68 +174,24 @@ class MyRob(CRobLinkAngs):
                 # Keep last cycle's angle value
                 self.angle_m1 = self.measures.compass
 
-    # TODO Deprecate
-    def _deduce_linear_velocity(self):
-        """
-        Based on the input from the obstacle sensors, drive slower if there are close obstacles near the more important
-         ones, and faster the farther it is from said obstacles
-        :return: The scalar value of the linear velocity, where the unit is the robot's diameter
-        """
-        # Get sensors values
-        left = self.measures.irSensor[LEFT_ID]
-        right = self.measures.irSensor[RIGHT_ID]
-        center = self.measures.irSensor[CENTER_ID]
-        back = self.measures.irSensor[BACK_ID]
-
-        # The total coefficient's purpose is used to calculate the absolute coefficient of each sensor in the formula
-        total_coefficient: float = 2.0
-        # These are the contribution percentages of each sensor, where
-        #  the closer a sensor is to the obstacle, the slower the robot should be.
-        # Notes on adjusting the parameters:
-        #  * I think the side values should be the same, because we ideally want the robot in the middle of the cells
-        #  * The back sensor value should be the smallest (least important one to calculate the linear velocity)
-        cp: float = 0.7  # center
-        lp: float = 0.1  # left
-        rp: float = 0.1  # right
-        bp: float = 1 - (cp + lp + rp)  # back
-        assert 0 <= bp < 1, f"Sum of relative obstacle sensor coefficients should equal 1 ({bp})"
-
-        return 1 / (total_coefficient * (left * lp
-                                         + right * rp
-                                         + center * cp
-                                         + back * bp))
-
-    # TODO deprecate
-    def _deduce_rotational_velocity(self):
-        """
-
-        :return: The rotational velocity
-        """
-        # Get sensors values
-        left = self.measures.irSensor[LEFT_ID]
-        right = self.measures.irSensor[RIGHT_ID]
-
-        # tune
-        coefficient: float = 0.65
-
-        return coefficient * (right - left)
-
     def wander(self):
-        # Alternate movement indicators
-        lin: float = self._deduce_linear_velocity()
-        rot: float = self._deduce_rotational_velocity()
 
-        in_l: float = lin - rot / 2
-        in_r: float = lin + rot / 2
+        # If close enough to the target cell, proceed
+        if self._is_micro_action_complete():
+            # Save info to the internal map
+            self.write_cell_to_map()
+            # Decide next actions (move 1 cell front or turn)
+            #   based on the walls detected
+            self._next_micro_action()
+            self._translate_micro_command()
 
-        # Save the values from this iteration for the next one
-        self.lin_m1 = lin
-        self.rot_m1 = rot
+            assert self.action in POSSIBLE_ACTIONS, f"Action: {self.action} not an action!"
 
-        # Calculate effective power estimation
-        self._calculate_effective_powers(in_r=in_r, in_l=in_l)
+        # Logs
+        self._log_cycle_class_vars()
 
-        self.driveMotors(in_l, in_r)
+        # Move
+        self._do_micro_action()
 
     def _movement_model(self):
         """
@@ -346,7 +315,7 @@ class MyRob(CRobLinkAngs):
         # check differences from current and last back sensor value
         #   and mend
         # But first, assert that axis is either X or Y (0 or 1)
-        assert self.axis in (X, Y), "self.axis value is invalid!"
+        assert self.axis in (X, Y), "self.axis value shouldn't be ROT in this function!"
 
         # Sensors update estimation
         mult1: int = -1 if self.get_orientation_axis() in ("WEST", "SOUTH") else 1
@@ -354,7 +323,7 @@ class MyRob(CRobLinkAngs):
         # Evaluate front wall
         if walls["front"] and self.sensors_m1[CENTER_ID] != -1:
             sensor_diff_front: float = mult1 * - (
-                1 / self.measures.irSensor[CENTER_ID] - 1 / self.sensors_m1[CENTER_ID])
+                    1 / self.measures.irSensor[CENTER_ID] - 1 / self.sensors_m1[CENTER_ID])
         else:
             sensor_diff_front = 0.
 
@@ -372,10 +341,302 @@ class MyRob(CRobLinkAngs):
 
         if sensor_diff == 0:  # No back or front walls detected
             p1 = 1.
-        self.last_corr_pos[self.axis] += mm_diff[self.axis] * p1 + sensor_diff * p2 * inhibitor
+        self.last_corr_pos[int(self.axis/10 - 1)] += mm_diff[int(self.axis/10 - 1)] * p1 + sensor_diff * p2 * inhibitor
 
         # # Complementary angle is obtained uniquely from the M.M.
         # self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
+
+    def _is_micro_action_complete(self):
+
+        if self.action == "start":
+            return True
+
+        # Tolerance margins from the target pose
+        margins: Dict[str, float] = dict(x=.2, y=.2, turn=.08)  # margin values can be tuned
+
+        trign = np.sin if self.target_pose[ROT] in (90.0, -90.0) else np.cos
+
+        error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
+        error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
+        error_angle: float = abs(
+            trign(np.radians(self.measures.compass))
+            - trign(np.radians(self.target_pose[ROT]))
+        )
+
+        # Check closeness from the:
+        # * x axis
+        if error_x > margins["x"]:
+            self.logger.debug(f"Not close enough (e = {error_x}) from X set point")
+            return False
+        # * y axis
+        if error_y > margins["y"]:
+            self.logger.debug(f"Not close enough (e = {error_y}) from Y set point")
+            return False
+        # * turn axis (rotation)
+        if self.axis == ROT:
+            if error_angle > margins["turn"] * .25:  # 75% less margin when rotating
+                # We shrank the tolerance here since it is more important for the robot's angle to
+                #   be correct in this case because it is likely starting an action of "going ahead",
+                #   propagating any angle error to larger proportions
+                self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
+                return False
+        else:
+            if error_angle > margins["turn"]:
+                # In this case, the robot is going ahead and the self.correct_pose is already adjusting
+                #   the agent's orientation, so a slightly larger slack is acceptable
+                self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
+                return False
+
+        self.logger.debug("Micro-action complete!")
+        return True
+
+    def _next_micro_action(self):
+        """
+        This function should give orders whether to:
+            * Rotate (left, right or back)
+            * Move (one cell forward)
+        Based on:
+            * The obstacle sensors
+            * The moving mode (explore or go to certain position)
+
+        :return: action command
+        """
+
+        # Double command
+        if self.next_action != "":
+            self.action = self.next_action
+            self.next_action = ""
+            return
+
+        walls_per_axis, walls_per_dir = self._get_cell_walls()
+        self.logger.debug(f"Walls per axis: {walls_per_axis}")
+        self.logger.debug(f"Walls per sides: {walls_per_dir}")
+
+        walls_count: int = list(walls_per_axis.values()).count("wall")
+
+        # Normalized to the center of the cell the robot is currently in
+        normalized_coordinates: tuple = tuple(int(2*round(elem/2)) for elem in self.last_corr_pos)
+        self.logger.debug(f"Normalized coordinates: {normalized_coordinates}")
+
+        # * Dead-end cell
+        if walls_count == 3:
+            # assert that the robot encounters the dead-end front face first
+            assert utils.get_key(walls_per_dir, "clear") == BACK_ID
+            # Command -> Go back
+            self.explore_mode = RETURN
+            self.action = "back"
+            self.next_action = "front"
+        # * Crossroad -> Go to next unexplored passage--
+        elif walls_count in (0, 1) or normalized_coordinates == (0, 0):
+
+            assert len(normalized_coordinates) == 2, f"Unexpected number of elements in normalized coordinates."
+
+            if normalized_coordinates not in self.crossroads.values():
+                # New crossroad
+                # -> add to c-dict and add info about the walls/passages
+                self.crossroads[normalized_coordinates] = dict()
+                for axis, passage in walls_per_axis.items():
+                    self.crossroads[normalized_coordinates][axis] = WALL if passage == "wall" else UNEXPLORED
+
+                # Go to first unexplored
+                for axis, passage in self.crossroads[normalized_coordinates].items():
+                    if passage == UNEXPLORED:
+                        self.action = self._what_side(axis)
+                        break
+                else:
+                    self.logger.critical("Unexpected state: "
+                                         "crossroad paradoxically contains no unexplored passageways.")
+                    exit(1)
+            else:
+                # Known crossroad case
+                if self.explore_mode == EXPLORE:
+                    # - Exploring -> Turn back, then go front (using next_action)
+                    self.explore_mode = RETURN
+                    self.action = "back"
+                    self.next_action = "front"
+                elif self.explore_mode == RETURN:
+                    # - Returning -> Go to next unexplored (if all explored, proceed to ORIGIN)
+                    self.explore_mode = EXPLORE
+
+                    # Go to first unexplored
+                    for axis, passage in self.crossroads[normalized_coordinates].items():
+                        if passage == UNEXPLORED:
+                            self.action = self._what_side(axis)
+                            break
+                    else:
+                        # Assert all are explored: we assume that the search is always depth first
+                        assert all((elem in (EXPLORED, ORIGIN) for elem in self.crossroads[normalized_coordinates]))
+                        # Maintain return mode
+                        self.explore_mode = RETURN
+                        # Go to origin
+                        for axis, passage in self.crossroads[normalized_coordinates].values():
+                            if passage == ORIGIN:
+                                self.action = self._what_side(axis)
+                                break
+                        else:
+                            self.logger.critical("Unexpected state: no origin nor unexplored passageway found")
+                            exit(1)
+
+                    if self.action != "front":
+                        self.next_action = "front"
+        # * Normal road -> Go front---------------------
+        elif walls_count == 2:
+            open_passages_sides = utils.get_keys(walls_per_dir, "wall")
+            if LEFT_ID in open_passages_sides:
+                self.action = "left"
+            elif RIGHT_ID in open_passages_sides:
+                self.action = "right"
+            elif CENTER_ID in open_passages_sides:
+                self.action = "front"
+            else:
+                raise AssertionError("Unexpected state: at least 3 walls found, but 2 expected")
+        else:
+            raise AssertionError(f"Unexpected number of walls: {walls_count}.")
+
+    def _do_micro_action(self):
+
+        lin: float = .0
+        rot: float = .0
+
+        angle_error: float = self._get_angle_error()  # between 0 and 1
+
+        if self.axis in (X, Y):
+            # Go front with constant velocity
+            lin = .09
+
+            # Correct pose (minimize slithering)
+            k: float = .05  # Tunable variable | TODO tune
+            deviation_error: float = 1 / self.measures.irSensor[LEFT_ID] - 1 / self.measures.irSensor[RIGHT_ID]
+            error: float = angle_error * 1.0 + deviation_error * .0  # Tunable percentages | TODO tune
+            rot = k * error
+
+        elif self.axis == ROT:
+            k: float = .15  # Tunable variable
+            rot = k * angle_error  # Rotational control
+        else:
+            self.logger.critical(f"Unexpected self.axis value: {self.axis}.")
+            exit(1)
+
+        # Save the values from this iteration for the next one
+        self.lin_m1 = lin
+        self.rot_m1 = rot
+
+        in_r: float = lin - rot / 2
+        in_l: float = lin + rot / 2
+
+        self._calculate_effective_powers(in_l=in_l, in_r=in_r)
+        self.driveMotors(in_l, in_r)
+
+    def _get_cell_walls(self) -> Tuple[dict, dict]:
+        """
+
+        :return:
+        """
+        axis: str = self.get_orientation_axis()
+        walls = [utils.eval_distance(wall) for wall in self.measures.irSensor]
+        walls_dir: Dict[int, float] = {side: utils.eval_distance(self.measures.irSensor[side]) for side in range(4)}
+
+        axis_walls = dict()
+
+        if axis == "NORTH":
+            axis_walls = dict(WEST=walls[LEFT_ID], SOUTH=walls[BACK_ID], EAST=walls[RIGHT_ID], NORTH=walls[CENTER_ID])
+        elif axis == "SOUTH":
+            axis_walls = dict(WEST=walls[RIGHT_ID], SOUTH=walls[CENTER_ID], EAST=walls[LEFT_ID], NORTH=walls[BACK_ID])
+        elif axis == "EAST":
+            axis_walls = dict(WEST=walls[BACK_ID], SOUTH=walls[RIGHT_ID], EAST=walls[CENTER_ID], NORTH=walls[LEFT_ID])
+        elif axis == "WEST":
+            axis_walls = dict(WEST=walls[CENTER_ID], SOUTH=walls[LEFT_ID], EAST=walls[BACK_ID], NORTH=walls[RIGHT_ID])
+        else:
+            self.logger.critical(f"Unexpected axis: {axis}.")
+            exit(1)
+
+        return axis_walls, walls_dir
+
+    def write_cell_to_map(self):
+        pass
+
+    def _what_side(self, target_axis):
+        """
+
+        :param target_axis: Reference axis
+        :return: Given the orientation of the robot, what side of it is the referenced axis?
+        E.g.: NORTH is to the right side of a WEST faced agent
+        """
+        front_side_axis: str = self.get_orientation_axis()
+        ref: Dict[str, str]
+
+        if target_axis == "WEST":
+            ref = dict(NORTH="left", EAST="back", SOUTH="right", WEST="front")
+            return ref[front_side_axis]
+        elif target_axis == "NORTH":
+            ref = dict(NORTH="front", EAST="left", SOUTH="back", WEST="right")
+            return ref[front_side_axis]
+        elif target_axis == "EAST":
+            ref = dict(NORTH="right", EAST="front", SOUTH="left", WEST="back")
+            return ref[front_side_axis]
+        elif target_axis == "SOUTH":
+            ref = dict(NORTH="back", EAST="right", SOUTH="front", WEST="left")
+            return ref[front_side_axis]
+        else:
+            raise AssertionError(f"Reference axis not recognized: {target_axis}.")
+
+    def _log_cycle_class_vars(self):
+        self.logger.debug(f"Explore mode: {self.explore_mode}.")
+        self.logger.debug(f"Current action: {self.action}.")
+        self.logger.debug(f"Next action: {self.next_action}.") if self.next_action != "" else None
+        self.logger.debug(f"Crossroads info: {self.crossroads}.")
+
+    def _translate_micro_command(self):
+
+        assert self.action in POSSIBLE_ACTIONS, f"Action not recognized: {self.action}."
+
+        rot_translation = dict(left=90, right=-90, back=-180)
+        move_translation = dict(WEST=-1, NORTH=1, SOUTH=-1, EAST=1)
+
+        if self.action in rot_translation.keys():
+            self.axis = ROT
+            self.target_pose[self.axis] += rot_translation[self.action]
+        else:
+            self._update_axis()
+            self.target_pose[self.axis] += move_translation[self.get_orientation_axis()]
+
+        # Normalize target pose angle attribute
+        self.target_pose[ROT] = self.target_pose[ROT] % 360 - 180
+
+    def _get_angle_error(self) -> float:
+        """
+
+        :return: Difference between target angle and actual robot angle, max 1.
+        """
+        a1: float = self.target_pose[ROT]
+        a2: float = self.measures.compass
+
+        if a1 == -180:
+            diff = - 1 - cos(a2)
+            if a2 <= 0:
+                return - diff
+            else:
+                return diff
+        elif a1 == -90:
+            diff = - 1 - sin(a2)
+            if -90 <= a2 < 90:
+                return - diff
+            else:
+                return diff
+        elif a1 == 0:
+            diff = 1 - cos(a2)
+            if a2 > 0:
+                return - diff
+            else:
+                return diff
+        elif a1 == 90:
+            diff = 1 - sin(a2)
+            if -90 <= a2 < 90:
+                return diff
+            else:
+                return - diff
+        else:
+            raise AssertionError(f"Target pose angle has unexpected value: {a1}.")
 
 
 class Map:
