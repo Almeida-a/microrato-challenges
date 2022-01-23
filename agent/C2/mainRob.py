@@ -140,15 +140,15 @@ class MyRob(CRobLinkAngs):
 
     def next_micro_action(self):
         """
-                This function should give orders whether to:
-                    * Rotate (left, right or back)
-                    * Move (one cell forward)
-                Based on:
-                    * The obstacle sensors
-                    * The moving mode (explore or go to certain position)
+        This function should give orders whether to:
+            * Rotate (left, right or back)
+            * Move (one cell forward)
+        Based on:
+            * The obstacle sensors
+            * The moving mode (explore or go to certain position)
 
-                :return: action order
-                """
+        :return: action order
+        """
 
         possible_actions: tuple = ("left", "right", "back", "front")
 

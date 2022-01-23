@@ -1,7 +1,5 @@
-import csv
-import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.pyplot as plt1
+import numpy as np
 import pandas as pd
 
 
@@ -15,20 +13,26 @@ class Main:
 
     plt.subplot(2, 2, 1)
     plt.plot(data.real_x, color='g')
+    plt.legend("Real X coordinates")
     plt.plot(data.est_x, color='r')
+    plt.legend("Estimated X coordinates")
     plt.title("X")
 
     plt.subplot(2, 2, 2)
     plt.plot(data.real_y, color='g')
+    plt.legend("Real Y coordinates")
     plt.plot(data.est_y, color='r')
+    plt.legend("Estimated Y coordinates")
     plt.title("Y")
 
     plt.subplot(2, 2, 3)
     plt.plot(dev_x, color='b')
+    plt.legend("Real-Estimated X coordinates")
     plt.title("X_dev")
 
     plt.subplot(2, 2, 4)
     plt.plot(dev_y, color='b')
+    plt.legend("Real-Estimated X coordinates")
     plt.title("Y_dev")
 
     plt.show()

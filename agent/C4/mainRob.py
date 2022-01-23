@@ -35,17 +35,35 @@ EXPLORE: int = 110
 RETURN: int = 220
 # -------------------
 
-POSSIBLE_MOVEMENT_TYPES: tuple = ("explore", "return")
+# POSSIBLE_MOVEMENT_TYPES: tuple = ("explore", "return")
 POSSIBLE_ACTIONS: tuple = ("front", "right", "back", "left", "finished")  # Discard start state
+AXIS_PRECEDENCE: tuple = ("WEST", "SOUTH", "EAST", "NORTH")
 
-# Max distance the robot can run in one cycle
-MAX_POW: float = .15
 # Detection threshold (for front and back sensors)
 THRESH_ANGLE: float = np.deg2rad(60)
 # return the max distance such that the returning measure is referring to the front wall (not a side wall)
 THRESHOLD_DIST: float = 1 / cos((pi - THRESH_ANGLE) / 2.)  # equals 2.0
-THRESH_INHIBITOR: float = .5
-THRESHOLD_DIST *= THRESH_INHIBITOR
+THRESH_DIST_INHIBITOR: float = .5
+THRESHOLD_DIST *= THRESH_DIST_INHIBITOR
+# Max angle error measure value (assuming always > 0)
+MAX_ANGLE_ERROR: float = 2.0
+# TUNABLE constants
+MAX_POW: float = .13  # Max distance the robot can run in one cycle
+ROTATION_DECELERATION_THRESH: float = .2  # When angle error falls below this value, velocity begins to decelerate
+TRANSLATION_DECELERATION_THRESH: float = .3  # When translation error falls below, velocity begins to decelerate
+
+
+def axis_precedence(axis_list: list) -> str:
+    """
+
+    :param axis_list: list of axis
+    :return: First axis counting from west counter-clockwise
+    """
+    # Remove invalid items
+    axis_list = list(filter(lambda elem: elem in AXIS_PRECEDENCE, axis_list))
+    if not axis_list:  # List empty
+        raise AssertionError("No valis axis in axis list!")
+    return axis_list[min([AXIS_PRECEDENCE.index(axis) for axis in axis_list])]
 
 
 class MyRob(CRobLinkAngs):
@@ -211,8 +229,7 @@ class MyRob(CRobLinkAngs):
         # Calculate new y coordinates
         y: float = y_m1 + lin * np.sin(np.radians(self.angle_m1))
 
-        self.logger.debug(f"New m.m. coordinates: x = {round(x, 3)}, y = {round(y, 3)},"
-                          f" with angle = {round(self.measures.compass, 3)}.")
+        self.logger.debug(f"New m.m. coordinates: x = ({round(x, 3)}), y = ({round(y, 3)})")
         # Output
         self.last_mm_pos = (x, y)
 
@@ -354,14 +371,11 @@ class MyRob(CRobLinkAngs):
         # Tolerance margins from the target pose
         margins: Dict[str, float] = dict(x=.2, y=.2, turn=.08)  # margin values can be tuned
 
-        trign = np.sin if self.target_pose[ROT] in (90.0, -90.0) else np.cos
+        trign = np.sin if self.target_pose[ROT] in (90, -90) else np.cos
 
         error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
         error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
-        error_angle: float = abs(
-            trign(np.radians(self.measures.compass))
-            - trign(np.radians(self.target_pose[ROT]))
-        )
+        error_angle: float = abs(self._get_angle_error())
 
         # Check closeness from the:
         # * x axis
@@ -409,6 +423,7 @@ class MyRob(CRobLinkAngs):
             return
 
         walls_per_axis, walls_per_dir = self._get_cell_walls()
+        self.logger.debug(f"Obstacle sensors: {self.measures.irSensor}")
         self.logger.debug(f"Walls per axis: {walls_per_axis}")
         self.logger.debug(f"Walls per sides: {walls_per_dir}")
 
@@ -422,6 +437,7 @@ class MyRob(CRobLinkAngs):
         if walls_count == 3:
             # assert that the robot encounters the dead-end front face first
             assert utils.get_key(walls_per_dir, "clear") == BACK_ID
+            assert self.explore_mode == EXPLORE
             # Command -> Go back
             self.explore_mode = RETURN
             self.action = "back"
@@ -439,14 +455,9 @@ class MyRob(CRobLinkAngs):
                     self.crossroads[normalized_coordinates][axis] = WALL if passage == "wall" else UNEXPLORED
 
                 # Go to first unexplored
-                for axis, passage in self.crossroads[normalized_coordinates].items():
-                    if passage == UNEXPLORED:
-                        self.action = self._what_side(axis)
-                        break
-                else:
-                    self.logger.critical("Unexpected state: "
-                                         "crossroad paradoxically contains no unexplored passageways.")
-                    exit(1)
+                unexplored_axis_list: list = utils.get_keys(
+                    dic=self.crossroads[normalized_coordinates], value=UNEXPLORED)
+                self.action = self._what_side(axis_precedence(unexplored_axis_list))
             else:
                 # Known crossroad case
                 if self.explore_mode == EXPLORE:
@@ -459,29 +470,24 @@ class MyRob(CRobLinkAngs):
                     self.explore_mode = EXPLORE
 
                     # Go to first unexplored
-                    for axis, passage in self.crossroads[normalized_coordinates].items():
-                        if passage == UNEXPLORED:
-                            self.action = self._what_side(axis)
-                            break
+                    unexplored_axis_list: list = utils.get_keys(
+                        dic=self.crossroads[normalized_coordinates], value=UNEXPLORED)
+                    if unexplored_axis_list:  # List not empty
+                        self.action = self._what_side(axis_precedence(unexplored_axis_list))
                     else:
                         # Assert all are explored: we assume that the search is always depth first
                         assert all((elem in (EXPLORED, ORIGIN) for elem in self.crossroads[normalized_coordinates]))
                         # Maintain return mode
                         self.explore_mode = RETURN
                         # Go to origin
-                        for axis, passage in self.crossroads[normalized_coordinates].values():
-                            if passage == ORIGIN:
-                                self.action = self._what_side(axis)
-                                break
-                        else:
-                            self.logger.critical("Unexpected state: no origin nor unexplored passageway found")
-                            exit(1)
+                        self.action = self._what_side(
+                            utils.get_key(dic=self.crossroads[normalized_coordinates], value=ORIGIN))
 
                     if self.action != "front":
                         self.next_action = "front"
         # * Normal road -> Go front---------------------
         elif walls_count == 2:
-            open_passages_sides = utils.get_keys(walls_per_dir, "wall")
+            open_passages_sides = utils.get_keys(walls_per_dir, "clear")
             if LEFT_ID in open_passages_sides:
                 self.action = "left"
             elif RIGHT_ID in open_passages_sides:
@@ -498,21 +504,31 @@ class MyRob(CRobLinkAngs):
         lin: float = .0
         rot: float = .0
 
-        angle_error: float = self._get_angle_error()  # between 0 and 1
+        angle_error: float = self._get_angle_error()  # between 0 and 2
 
         if self.axis in (X, Y):
             # Go front with constant velocity
             lin = .09
 
-            # Correct pose (minimize slithering)
-            k: float = .05  # Tunable variable | TODO tune
+            # K value based on the point where the robot begins decelerating the rotational velocity
+            # E.g.: .3 -> when angle error falls below .3, the rotational velocity starts decelerating
+            k = (MAX_POW - lin) / ROTATION_DECELERATION_THRESH
+
             deviation_error: float = 1 / self.measures.irSensor[LEFT_ID] - 1 / self.measures.irSensor[RIGHT_ID]
             error: float = angle_error * 1.0 + deviation_error * .0  # Tunable percentages | TODO tune
             rot = k * error
 
+            # Upper bound k such that velocity maxes out at .15
+            rot = MAX_POW - lin if rot + lin > MAX_POW else rot
+
         elif self.axis == ROT:
-            k: float = .15  # Tunable variable
+            k: float = MAX_POW / ROTATION_DECELERATION_THRESH
+
             rot = k * angle_error  # Rotational control
+
+            # Upper bound rot to MAX_POW value
+            if abs(rot) > MAX_POW:
+                rot = MAX_POW if rot > MAX_POW else -MAX_POW
         else:
             self.logger.critical(f"Unexpected self.axis value: {self.axis}.")
             exit(1)
@@ -521,8 +537,8 @@ class MyRob(CRobLinkAngs):
         self.lin_m1 = lin
         self.rot_m1 = rot
 
-        in_r: float = lin - rot / 2
-        in_l: float = lin + rot / 2
+        in_r: float = lin - rot
+        in_l: float = lin + rot
 
         self._calculate_effective_powers(in_l=in_l, in_r=in_r)
         self.driveMotors(in_l, in_r)
@@ -555,7 +571,7 @@ class MyRob(CRobLinkAngs):
     def write_cell_to_map(self):
         pass
 
-    def _what_side(self, target_axis):
+    def _what_side(self, target_axis: str):
         """
 
         :param target_axis: Reference axis
@@ -585,6 +601,11 @@ class MyRob(CRobLinkAngs):
         self.logger.debug(f"Current action: {self.action}.")
         self.logger.debug(f"Next action: {self.next_action}.") if self.next_action != "" else None
         self.logger.debug(f"Crossroads info: {self.crossroads}.")
+        self.logger.debug(f"Current axis: {self.axis}")
+        self.logger.debug(f"Robot position estimate: x=({round(self.last_corr_pos[0], 2)})), "
+                          f"y=({round(self.last_corr_pos[1], 2)}), angle=({round(self.measures.compass, 2)})")
+        self.logger.debug(f"Robot target position: x=({round(self.target_pose[X], 2)})), "
+                          f"y=({round(self.target_pose[Y], 2)}), angle=({round(self.target_pose[ROT], 2)})")
 
     def _translate_micro_command(self):
 
@@ -598,39 +619,39 @@ class MyRob(CRobLinkAngs):
             self.target_pose[self.axis] += rot_translation[self.action]
         else:
             self._update_axis()
-            self.target_pose[self.axis] += move_translation[self.get_orientation_axis()]
+            self.target_pose[self.axis] += move_translation[self.get_orientation_axis()] * 2
 
         # Normalize target pose angle attribute
-        self.target_pose[ROT] = self.target_pose[ROT] % 360 - 180
+        self.target_pose[ROT] = (self.target_pose[ROT] + 180) % 360 - 180
 
     def _get_angle_error(self) -> float:
         """
 
-        :return: Difference between target angle and actual robot angle, max 1.
+        :return: Difference between target angle and actual robot angle, max 2.
         """
         a1: float = self.target_pose[ROT]
         a2: float = self.measures.compass
 
         if a1 == -180:
-            diff = - 1 - cos(a2)
+            diff = - 1 - cos(np.radians(a2))
             if a2 <= 0:
                 return - diff
             else:
                 return diff
         elif a1 == -90:
-            diff = - 1 - sin(a2)
+            diff = - 1 - sin(np.radians(a2))
             if -90 <= a2 < 90:
                 return - diff
             else:
                 return diff
         elif a1 == 0:
-            diff = 1 - cos(a2)
+            diff = 1 - cos(np.radians(a2))
             if a2 > 0:
                 return - diff
             else:
                 return diff
         elif a1 == 90:
-            diff = 1 - sin(a2)
+            diff = 1 - sin(np.radians(a2))
             if -90 <= a2 < 90:
                 return diff
             else:
