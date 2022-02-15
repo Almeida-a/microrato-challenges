@@ -28,7 +28,7 @@ def _valid_crossroad(ways: List[int]) -> bool:
         1 - One and only one ORIGIN
         2 - Others are of type CLEAR or WALL
         One of the following:
-            3 - More than one CLEAR (meaning there is only one path ahead, excluding the one the agent came from)
+            3 - More than one CLEAR (meaning there is only one path ahead, excluding the one the C4 came from)
             4 - Dead end [see _dead_end], although not techically a crossroad, it is useful here to define as such
     :param ways:
     :return: All conditions are met => True, False otherwise
@@ -166,7 +166,7 @@ class TreeNode:
             raise AssertionError("All child nodes explored but node is marked as unexplored!")
 
 
-# Robot agent related functions
+# Robot C4 related functions
 def is_crossroad_or_root(west: int, south: int, east: int, north: int, node: [TreeNode, None]) -> bool:
     """
     :param node: node of the tree

@@ -34,18 +34,18 @@ shift $(($OPTIND-1))
 
 case $challenge in
     4)
-        # how to call agent for challenge 4
+        # how to call C4 for challenge 4
         python3 mainRob.py -h "$host" -p "$pos" -r "$robname"
         mv mappingC4.out $outfile.map
         mv pathC4.out $outfile.path
         ;;
-        # how to call agent for challenge 4
+        # how to call C4 for challenge 4
         #java mainC4 -h "$host" -p "$pos" -r "$robname"
         #mv your_mapfile $outfile.map
         #mv your_pathfile $outfile.path
         #;;
 
-        # how to call agent for challenge 4
+        # how to call C4 for challenge 4
         #./mainC4 -h "$host" -p "$pos" -r "$robname"
         #mv your_mapfile $outfile.map
         #mv your_pathfile $outfile.path

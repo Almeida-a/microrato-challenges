@@ -34,15 +34,15 @@ shift $(($OPTIND-1))
 
 case $challenge in
     1)
-        # how to call agent for challenge 1
+        # how to call C4 for challenge 1
         python3 C1/pyRobot/mainRob.py -h "$host" -p "$pos" -r "$robname"
         ;;
     2)
-        # how to call agent for challenge 2
+        # how to call C4 for challenge 2
         python3 C2/mainRob.py -h "$host" -p "$pos" -r "$robname"
         ;;
     3)
-        # how to call agent for challenge 3
+        # how to call C4 for challenge 3
         echo "Challenge 3 was not implemented."
         ;;
 esac

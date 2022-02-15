@@ -397,7 +397,7 @@ class MyRob(CRobLinkAngs):
         else:
             if error_angle > margins["turn"]:
                 # In this case, the robot is going ahead and the self.correct_pose is already adjusting
-                #   the agent's orientation, so a slightly larger slack is acceptable
+                #   the C4's orientation, so a slightly larger slack is acceptable
                 self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
                 return False
 
@@ -576,7 +576,7 @@ class MyRob(CRobLinkAngs):
 
         :param target_axis: Reference axis
         :return: Given the orientation of the robot, what side of it is the referenced axis?
-        E.g.: NORTH is to the right side of a WEST faced agent
+        E.g.: NORTH is to the right side of a WEST faced C4
         """
         front_side_axis: str = self.get_orientation_axis()
         ref: Dict[str, str]

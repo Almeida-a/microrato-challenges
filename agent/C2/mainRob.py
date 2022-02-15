@@ -309,7 +309,7 @@ class MyRob(CRobLinkAngs):
         else:
             if error_angle > margins["turn"]:
                 # In this case, the robot is going ahead and the self.correct_pose is already adjusting
-                #   the agent's orientation, so a slightly larger slack is acceptable
+                #   the C4's orientation, so a slightly larger slack is acceptable
                 self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
                 return False
 
@@ -363,7 +363,7 @@ class MyRob(CRobLinkAngs):
 
     def create_micro_map(self, root: bool) -> Dict[str, int]:
         """
-        This function assumes that the direction the agent faces to is the target pose (since the agent at this
+        This function assumes that the direction the C4 faces to is the target pose (since the C4 at this
             phase has just arrived to the goal position, therefore currentPose=targetPose, hence the assumption)
         Creates a map of the surrounding elements
         :return: A dictionary in the format: {west: ORIGIN, south, WALL, ...}
