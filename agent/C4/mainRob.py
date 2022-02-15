@@ -5,7 +5,7 @@ import sys
 import yaml
 from typing import Tuple, List, Dict, Union
 
-from agent.C4 import utils
+import utils
 from croblink import *
 import xml.etree.ElementTree as ET
 import csv
