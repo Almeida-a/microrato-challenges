@@ -524,6 +524,10 @@ class MyRob(CRobLinkAngs):
         elif self.axis == ROT:
             k: float = MAX_POW / ROTATION_DECELERATION_THRESH
 
+            # Invert when left (just an idea)
+            #if self.action == "left":
+            #    k *= -1
+                
             rot = k * angle_error  # Rotational control
 
             # Upper bound rot to MAX_POW value
