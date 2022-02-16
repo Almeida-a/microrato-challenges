@@ -437,7 +437,7 @@ class MyRob(CRobLinkAngs):
         if walls_count == 3:
             # assert that the robot encounters the dead-end front face first
             assert utils.get_key(walls_per_dir, "clear") == BACK_ID
-            assert self.explore_mode == EXPLORE
+            assert self.explore_mode == EXPLORE, f"Explore expected, found {self.explore_mode}"
             # Command -> Go back
             self.explore_mode = RETURN
             self.action = "back"
@@ -496,6 +496,12 @@ class MyRob(CRobLinkAngs):
                 self.action = "front"
             else:
                 raise AssertionError("Unexpected state: at least 3 walls found, but 2 expected")
+
+            # If robot turns, give double command
+            #   (remember that it has already turned and doesn't need to turn another time
+            if self.action in ("left", "right"):
+                self.next_action = "front"
+
         else:
             raise AssertionError(f"Unexpected number of walls: {walls_count}.")
 
@@ -525,8 +531,8 @@ class MyRob(CRobLinkAngs):
             k: float = MAX_POW / ROTATION_DECELERATION_THRESH
 
             # Invert when left (just an idea)
-            #if self.action == "left":
-            #    k *= -1
+            # if self.action == "left":
+            #     k *= -1
                 
             rot = k * angle_error  # Rotational control
 
