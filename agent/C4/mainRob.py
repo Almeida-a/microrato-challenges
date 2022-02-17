@@ -46,11 +46,15 @@ THRESHOLD_DIST: float = 1 / cos((pi - THRESH_ANGLE) / 2.)  # equals 2.0
 THRESH_DIST_INHIBITOR: float = .5
 THRESHOLD_DIST *= THRESH_DIST_INHIBITOR
 # Max angle error measure value (assuming always > 0)
-MAX_ANGLE_ERROR: float = 2.0
-# TUNABLE constants
-MAX_POW: float = .13  # Max distance the robot can run in one cycle
-ROTATION_DECELERATION_THRESH: float = .2  # When angle error falls below this value, velocity begins to decelerate
+MAX_ANGLE_ERROR: float = 180.0
+
+# --------------------------------- TUNABLE constants --------------------------
+MAX_POW: float = .1  # Max. distance the robot can run in one cycle
+ROTATION_DECELERATION_THRESH: float = 30.0  # When angle error falls below this value, velocity begins to decelerate
 TRANSLATION_DECELERATION_THRESH: float = .3  # When translation error falls below, velocity begins to decelerate
+SENSOR_DIFF_MIN: float = 0.7  # E.g. 0.3 -> If sensor increment is less than 30% of Mov. Model, discard it
+SENSOR_DIFF_MAX: float = 1.5  # E.g. 1.5 -> If sensor increment is more than 150% of Mov. Model, discard it
+# ------------------------------------------------------------------------------
 
 
 def axis_precedence(axis_list: list) -> str:
@@ -89,8 +93,8 @@ class MyRob(CRobLinkAngs):
         # Micro-action command
         self.action: str = "start"
         self.next_action: str = ""
-        #
-        self.explore_mode: int = EXPLORED
+        # Initialize explore mode
+        self.explore_mode: int = EXPLORE
         # Associates a crossroad's center coordinates to the crossroads where they lead to
         # e.g.: (x, y) -> {north=(x1, y1), east=ORIGIN, west=(x2, y2), south=EXPLORED}
         self.crossroads: Dict[Tuple[int, int], Dict[str, Union[Tuple[int, int], int]]] = {}
@@ -202,6 +206,8 @@ class MyRob(CRobLinkAngs):
             #   based on the walls detected
             self._next_micro_action()
             self._translate_micro_command()
+            # A second kind of position correction
+            self._halted_robot_correction()
 
             assert self.action in POSSIBLE_ACTIONS, f"Action: {self.action} not an action!"
 
@@ -310,9 +316,7 @@ class MyRob(CRobLinkAngs):
 
         # TUNABLE parameters
         # Relative Contribution weight of, respectively, M.M. and sensors
-        p1, p2 = .33, .67
-        # Absolute contribution weight of sensors based estimation
-        inhibitor: float = 1.0
+        p1, p2 = .2, .8
 
         # Run movement model
         self._movement_model()
@@ -320,14 +324,11 @@ class MyRob(CRobLinkAngs):
         # Get walls info into variable
         walls = dict(front=self._front_info(), back=self._back_info())
 
-        # Case:
-        # Complementary axis oscillations are not being taken into account TODO bear this in mind
-
         # Get movement model estimated position change
         mm_diff = tuple(
             [self.last_mm_pos[i] - self.last_corr_pos[i] for i in (0, 1)]
         )
-        self.logger.debug(f"Movement model update: (x, y) = {mm_diff}")
+        self.logger.debug(f"Movement model update: (x, y) = ({round(mm_diff[0], 4)}, {round(mm_diff[1], 4)})")
 
         # check differences from current and last back sensor value
         #   and mend
@@ -351,17 +352,25 @@ class MyRob(CRobLinkAngs):
         else:
             sensor_diff_back = 0.
 
-        # Average the result (if neither found a wall, result will be 0)
-        sensor_diff: float = (sensor_diff_front + sensor_diff_back) / 2
+        if 0. in (sensor_diff_front, sensor_diff_back):
+            # sensor_diff = front/back/0.0
+            sensor_diff = sensor_diff_front + sensor_diff_back
+        else:
+            # Average the result
+            sensor_diff: float = (sensor_diff_front + sensor_diff_back) / 2
 
-        self.logger.debug(f"Sensor diff update: ({'y' if self.axis == Y else 'x'}) = ({sensor_diff})")
+        self.logger.debug(f"Sensor diff update: ({'y' if self.axis == Y else 'x'}) = ({round(sensor_diff, 4)})")
 
-        if sensor_diff == 0:  # No back or front walls detected
-            p1 = 1.
-        self.last_corr_pos[int(self.axis/10 - 1)] += mm_diff[int(self.axis/10 - 1)] * p1 + sensor_diff * p2 * inhibitor
+        axis_index = int(self.axis / 10 - 1)
 
-        # # Complementary angle is obtained uniquely from the M.M.
-        # self.last_corr_pos[1 - self.axis] += mm_diff[1 - self.axis]
+        # No back or front walls detected
+        if sensor_diff == 0 or \
+                sensor_diff < SENSOR_DIFF_MIN * mm_diff[axis_index] or \
+                sensor_diff > SENSOR_DIFF_MAX * mm_diff[axis_index]:
+            # 100% Movement model
+            p1 = 1.  # Jesus, take the wheel
+            p2 = 0.
+        self.last_corr_pos[axis_index] += mm_diff[axis_index] * p1 + sensor_diff * p2
 
     def _is_micro_action_complete(self):
 
@@ -369,16 +378,21 @@ class MyRob(CRobLinkAngs):
             return True
 
         # Tolerance margins from the target pose
-        margins: Dict[str, float] = dict(x=.2, y=.2, turn=.08)  # margin values can be tuned
-
-        trign = np.sin if self.target_pose[ROT] in (90, -90) else np.cos
+        margins: Dict[str, float] = dict(x=.2, y=.2, turn=20.0)  # margin values can be tuned
 
         error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
         error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
         error_angle: float = abs(self._get_angle_error())
 
+        # If the walls are critically close, force stop and signal completion
+        d_front = 1 / self.measures.irSensor[CENTER_ID]
+        if self.action == "front" and d_front < .5:
+            self.logger.debug(f"Critically close (d = {d_front}) to front wall!")
+            self.logger.debug("Micro-action COMPLETE")
+            return True
+
         # Check closeness from the:
-        # * x axis
+        # * x-axis
         if error_x > margins["x"]:
             self.logger.debug(f"Not close enough (e = {error_x}) from X set point")
             return False
@@ -395,13 +409,20 @@ class MyRob(CRobLinkAngs):
                 self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
                 return False
         else:
+            self._halted_robot_correction()
+
             if error_angle > margins["turn"]:
                 # In this case, the robot is going ahead and the self.correct_pose is already adjusting
                 #   the C4's orientation, so a slightly larger slack is acceptable
                 self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
                 return False
 
-        self.logger.debug("Micro-action complete!")
+        # if self.axis in (X, Y):
+        #     # TODO check here if the robot is getting too close to the
+        #     #  front wall (the accumulated error from the position estimate can cause that)
+        #     self._halted_robot_correction()
+
+        self.logger.debug("Micro-action COMPLETE")
         return True
 
     def _next_micro_action(self):
@@ -423,14 +444,13 @@ class MyRob(CRobLinkAngs):
             return
 
         walls_per_axis, walls_per_dir = self._get_cell_walls()
-        self.logger.debug(f"Obstacle sensors: {self.measures.irSensor}")
         self.logger.debug(f"Walls per axis: {walls_per_axis}")
         self.logger.debug(f"Walls per sides: {walls_per_dir}")
 
         walls_count: int = list(walls_per_axis.values()).count("wall")
 
         # Normalized to the center of the cell the robot is currently in
-        normalized_coordinates: tuple = tuple(int(2*round(elem/2)) for elem in self.last_corr_pos)
+        normalized_coordinates = self._get_normalized_estimate()
         self.logger.debug(f"Normalized coordinates: {normalized_coordinates}")
 
         # * Dead-end cell
@@ -510,31 +530,35 @@ class MyRob(CRobLinkAngs):
         lin: float = .0
         rot: float = .0
 
-        angle_error: float = self._get_angle_error()  # between 0 and 2
+        angle_error: float = self._get_angle_error()  # between -180 and 180
 
         if self.axis in (X, Y):
-            # Go front with constant velocity
-            lin = .09
+            left_dist: float = 1 / self.measures.irSensor[LEFT_ID]
+            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID]
 
-            # K value based on the point where the robot begins decelerating the rotational velocity
-            # E.g.: .3 -> when angle error falls below .3, the rotational velocity starts decelerating
-            k = (MAX_POW - lin) / ROTATION_DECELERATION_THRESH
+            # Checks if the robot is in a corridor (has walls on both sides in the current cell)
+            is_corridor: bool = (left_dist + right_dist) - 0.8 <= .2
 
-            deviation_error: float = 1 / self.measures.irSensor[LEFT_ID] - 1 / self.measures.irSensor[RIGHT_ID]
-            error: float = angle_error * 1.0 + deviation_error * .0  # Tunable percentages | TODO tune
-            rot = k * error
+            # Measures how far the robot is from the center of the cell (using side sensors)
+            deviation_error: float = left_dist - right_dist if is_corridor else 0
+            if is_corridor and deviation_error > utils.WALL_MAX_DIST - 0.4:
+                self.logger.warning("Robot is straying too much from the center at this corridor!")
 
-            # Upper bound k such that velocity maxes out at .15
-            rot = MAX_POW - lin if rot + lin > MAX_POW else rot
+            # Scope: 0 <= error <= 1
+            error: float = (angle_error / 20.0) * 0.7 + (deviation_error / .8) * 0.3  # Tunable percentages | TODO tune
+            rot = MAX_POW * error
+
+            # Linear velocity value should not make the global velocity surpasses MAX_POW
+            max_lin = MAX_POW - rot
+            lin = max_lin
 
         elif self.axis == ROT:
             k: float = MAX_POW / ROTATION_DECELERATION_THRESH
 
-            # Invert when left (just an idea)
-            # if self.action == "left":
-            #     k *= -1
-                
             rot = k * angle_error  # Rotational control
+
+            self.logger.debug(f"Angle error = ({round(angle_error, 2)}), "
+                              f"rot = ({round(rot, 2)})")
 
             # Upper bound rot to MAX_POW value
             if abs(rot) > MAX_POW:
@@ -543,12 +567,14 @@ class MyRob(CRobLinkAngs):
             self.logger.critical(f"Unexpected self.axis value: {self.axis}.")
             exit(1)
 
+        self.logger.debug(f"Lin = ({round(lin, 2)}), Rot = ({round(rot, 2)})")
+
         # Save the values from this iteration for the next one
         self.lin_m1 = lin
         self.rot_m1 = rot
 
-        in_r: float = lin - rot
-        in_l: float = lin + rot
+        in_r: float = lin + rot
+        in_l: float = lin - rot
 
         self._calculate_effective_powers(in_l=in_l, in_r=in_r)
         self.driveMotors(in_l, in_r)
@@ -610,11 +636,12 @@ class MyRob(CRobLinkAngs):
         self.logger.debug(f"Explore mode: {self.explore_mode}.")
         self.logger.debug(f"Current action: {self.action}.")
         self.logger.debug(f"Next action: {self.next_action}.") if self.next_action != "" else None
+        self.logger.debug(f"Obstacle sensors: {self.measures.irSensor}")
         self.logger.debug(f"Crossroads info: {self.crossroads}.")
         self.logger.debug(f"Current axis: {self.axis}")
-        self.logger.debug(f"Robot position estimate: x=({round(self.last_corr_pos[0], 2)})), "
+        self.logger.debug(f"Robot position estimate: x=({round(self.last_corr_pos[0], 2)}), "
                           f"y=({round(self.last_corr_pos[1], 2)}), angle=({round(self.measures.compass, 2)})")
-        self.logger.debug(f"Robot target position: x=({round(self.target_pose[X], 2)})), "
+        self.logger.debug(f"Robot target position: x=({round(self.target_pose[X], 2)}), "
                           f"y=({round(self.target_pose[Y], 2)}), angle=({round(self.target_pose[ROT], 2)})")
 
     def _translate_micro_command(self):
@@ -637,37 +664,56 @@ class MyRob(CRobLinkAngs):
     def _get_angle_error(self) -> float:
         """
 
-        :return: Difference between target angle and actual robot angle, max 2.
+        :return: Difference between target angle and actual robot angle, max 2 or -2, if <0.
         """
         a1: float = self.target_pose[ROT]
         a2: float = self.measures.compass
 
-        if a1 == -180:
-            diff = - 1 - cos(np.radians(a2))
-            if a2 <= 0:
-                return - diff
-            else:
-                return diff
-        elif a1 == -90:
-            diff = - 1 - sin(np.radians(a2))
-            if -90 <= a2 < 90:
-                return - diff
-            else:
-                return diff
-        elif a1 == 0:
-            diff = 1 - cos(np.radians(a2))
-            if a2 > 0:
-                return - diff
-            else:
-                return diff
-        elif a1 == 90:
-            diff = 1 - sin(np.radians(a2))
-            if -90 <= a2 < 90:
-                return diff
-            else:
-                return - diff
-        else:
-            raise AssertionError(f"Target pose angle has unexpected value: {a1}.")
+        if a1 == -180 and a2 > 0:
+            # Target orientation is WEST
+            a2 -= 360
+
+        elif a1 == -90 and a2 >= 90:
+            # Target orientation is SOUTH
+            a2 -= 360
+
+        elif a1 == 90 and a2 < -90:
+            # Target orientation is NORTH
+            a2 += 360
+
+        return a1 - a2
+
+    def _halted_robot_correction(self) -> bool:
+        """
+        Assuming this function is called after the completion of a (translation?) micro-action,
+            this function calculates the robot's position regarding the center of the cell
+            based on the: front wall (more walls may be taken into account in the future TODO do it now)
+        :return: True if a correction was carried out
+        """
+        center, left, right, back = (1 / self.measures.irSensor[j] for j in range(3))
+        axis_index: int = 0 if self.axis == X else 1
+
+        # Check if there is a wall at the front of the robot
+        if not utils.eval_distance(self.measures.irSensor[CENTER_ID]) == "wall":
+            self.logger.debug("Halted robot estimate: No front wall detected!")
+            return False
+
+        # Calculate the robot position estimate at self.axis based on the front wall
+        pos_center: tuple = self._get_normalized_estimate()
+        pos_center[axis_index] += .45 - center
+        self.logger.debug(f"Halted robot estimate: {self.axis} = ({round(pos_center[axis_index], 3)})")
+
+        # Average the result (50/50 or other)
+        self.last_corr_pos[axis_index] = self.last_corr_pos[axis_index] * .5 + pos_center[axis_index] * .5
+        return True
+
+    def _get_normalized_estimate(self) -> tuple:
+        """
+        Calculate coordinates of the center of the cell where the robot is
+            estimated to be in
+        :return:
+        """
+        return tuple(int(2 * round(elem / 2)) for elem in self.last_corr_pos)
 
 
 class Map:

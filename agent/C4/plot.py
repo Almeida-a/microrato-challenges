@@ -13,26 +13,26 @@ class Main:
 
     plt.subplot(2, 2, 1)
     plt.plot(data.real_x, color='g')
-    plt.legend("Real X coordinates")
+    plt.legend("R")
     plt.plot(data.est_x, color='r')
-    plt.legend("Estimated X coordinates")
+    plt.legend("E")
     plt.title("X")
 
     plt.subplot(2, 2, 2)
     plt.plot(data.real_y, color='g')
-    plt.legend("Real Y coordinates")
+    plt.legend("R")
     plt.plot(data.est_y, color='r')
-    plt.legend("Estimated Y coordinates")
+    plt.legend("E")
     plt.title("Y")
 
     plt.subplot(2, 2, 3)
     plt.plot(dev_x, color='b')
-    plt.legend("Real-Estimated X coordinates")
+    plt.legend("RE Diff")
     plt.title("X_dev")
 
     plt.subplot(2, 2, 4)
     plt.plot(dev_y, color='b')
-    plt.legend("Real-Estimated X coordinates")
+    plt.legend("RE Diff")
     plt.title("Y_dev")
 
     plt.show()
