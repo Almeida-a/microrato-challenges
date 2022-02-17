@@ -690,7 +690,7 @@ class MyRob(CRobLinkAngs):
             based on the: front wall (more walls may be taken into account in the future TODO do it now)
         :return: True if a correction was carried out
         """
-        center, left, right, back = (1 / self.measures.irSensor[j] for j in range(3))
+        center, left, right, back = (1 / self.measures.irSensor[j] for j in range(4))
         axis_index: int = 0 if self.axis == X else 1
 
         # Check if there is a wall at the front of the robot
@@ -699,7 +699,7 @@ class MyRob(CRobLinkAngs):
             return False
 
         # Calculate the robot position estimate at self.axis based on the front wall
-        pos_center: tuple = self._get_normalized_estimate()
+        pos_center = list(self._get_normalized_estimate())
         pos_center[axis_index] += .45 - center
         self.logger.debug(f"Halted robot estimate: {self.axis} = ({round(pos_center[axis_index], 3)})")
 
