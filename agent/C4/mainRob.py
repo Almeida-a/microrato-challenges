@@ -26,17 +26,18 @@ X: int = 10
 Y: int = 20
 ROT: int = 30
 # Crossroads passages
-EXPLORED: int = 100
-UNEXPLORED: int = 200
+UNEXPLORED: int = 100
+PART_EXPLORED: int = 200  # TODO implement partially explored crossroad pathways (which means that the pathway is not fully explored, but it isn't unknown either
 ORIGIN: int = 300
-WALL: int = 400
+EXPLORED: int = 400
+WALL: int = 500
 # Explore modes
 EXPLORE: int = 110
 RETURN: int = 220
 # -------------------
 
 # POSSIBLE_MOVEMENT_TYPES: tuple = ("explore", "return")
-POSSIBLE_ACTIONS: tuple = ("front", "right", "back", "left", "finished")  # Discard start state
+POSSIBLE_ACTIONS: tuple = ("front", "left", "right", "back", "finished")
 AXIS_PRECEDENCE: tuple = ("WEST", "SOUTH", "EAST", "NORTH")
 
 # Detection threshold (for front and back sensors)
@@ -67,7 +68,9 @@ def axis_precedence(axis_list: list) -> str:
     axis_list = list(filter(lambda elem: elem in AXIS_PRECEDENCE, axis_list))
     if not axis_list:  # List empty
         raise AssertionError("No valis axis in axis list!")
-    return axis_list[min([AXIS_PRECEDENCE.index(axis) for axis in axis_list])]
+    return AXIS_PRECEDENCE[
+        min([AXIS_PRECEDENCE.index(axis) for axis in axis_list])
+    ]
 
 
 class MyRob(CRobLinkAngs):
@@ -298,19 +301,23 @@ class MyRob(CRobLinkAngs):
             self.axis = X
 
     def get_orientation_axis(self) -> str:
+        return self.get_axis_for_side(CENTER_ID)
 
-        orientation: str
+    def get_axis_for_side(self, side_id: int) -> str:
+
+        orientation: List[str]
 
         if -45 < self.measures.compass <= 45:
-            orientation = "EAST"
+            orientation = ["EAST", "NORTH", "SOUTH", "WEST"]
         elif -135 < self.measures.compass <= -45:
-            orientation = "SOUTH"
+            orientation = ["SOUTH", "EAST", "WEST", "NORTH"]
         elif 45 < self.measures.compass <= 135:
-            orientation = "NORTH"
+            orientation = ["NORTH", "WEST", "EAST", "SOUTH"]
         else:  # Below -135 or above 135
-            orientation = "WEST"
+            orientation = ["WEST", "SOUTH", "NORTH", "EAST"]
 
-        return orientation
+        return orientation[side_id]
+
 
     def _stateless_correction(self):
 
@@ -378,7 +385,7 @@ class MyRob(CRobLinkAngs):
             return True
 
         # Tolerance margins from the target pose
-        margins: Dict[str, float] = dict(x=.2, y=.2, turn=20.0)  # margin values can be tuned
+        margins: Dict[str, float] = dict(x=.25, y=.25, turn=20.0)  # margin values can be tuned
 
         error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
         error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
@@ -388,6 +395,8 @@ class MyRob(CRobLinkAngs):
         d_front = 1 / self.measures.irSensor[CENTER_ID]
         if self.action == "front" and d_front < .5:
             self.logger.debug(f"Critically close (d = {d_front}) to front wall!")
+            self.target_pose[X], self.target_pose[Y] = self._get_normalized_estimate()
+            self.logger.info(f"Reset target position: (x, y) = {tuple(self.target_pose[ax] for ax in (X, Y))}")
             self.logger.debug("Micro-action COMPLETE")
             return True
 
@@ -461,51 +470,38 @@ class MyRob(CRobLinkAngs):
             # Command -> Go back
             self.explore_mode = RETURN
             self.action = "back"
-            self.next_action = "front"
         # * Crossroad -> Go to next unexplored passage--
         elif walls_count in (0, 1) or normalized_coordinates == (0, 0):
 
             assert len(normalized_coordinates) == 2, f"Unexpected number of elements in normalized coordinates."
 
-            if normalized_coordinates not in self.crossroads.values():
+            if normalized_coordinates not in self.crossroads.keys():
                 # New crossroad
                 # -> add to c-dict and add info about the walls/passages
                 self.crossroads[normalized_coordinates] = dict()
-                for axis, passage in walls_per_axis.items():
-                    self.crossroads[normalized_coordinates][axis] = WALL if passage == "wall" else UNEXPLORED
+                for cardinal_orientation, passage in walls_per_axis.items():
+                    if passage == "wall":
+                        self.crossroads[normalized_coordinates][cardinal_orientation] = WALL
+                    elif normalized_coordinates != (0, 0) and cardinal_orientation == self.get_axis_for_side(BACK_ID):
+                        # Assign back side as ORIGIN (as long as this is not the root cell)
+                        self.crossroads[normalized_coordinates][cardinal_orientation] = ORIGIN
+                    else:
+                        self.crossroads[normalized_coordinates][cardinal_orientation] = UNEXPLORED
 
-                # Go to first unexplored
-                unexplored_axis_list: list = utils.get_keys(
-                    dic=self.crossroads[normalized_coordinates], value=UNEXPLORED)
-                self.action = self._what_side(axis_precedence(unexplored_axis_list))
+                self._goto_unexplored(walls_per_dir, normalized_coordinates)
             else:
                 # Known crossroad case
                 if self.explore_mode == EXPLORE:
-                    # - Exploring -> Turn back, then go front (using next_action)
-                    self.explore_mode = RETURN
-                    self.action = "back"
-                    self.next_action = "front"
+                    self._goto_unexplored(walls_per_dir, normalized_coordinates)
                 elif self.explore_mode == RETURN:
-                    # - Returning -> Go to next unexplored (if all explored, proceed to ORIGIN)
+                    # Mark the pathway the robot came from as explored
+                    self.crossroads[normalized_coordinates][self.get_axis_for_side(BACK_ID)] = EXPLORED
+                    # Reset to exploring mode
                     self.explore_mode = EXPLORE
 
-                    # Go to first unexplored
-                    unexplored_axis_list: list = utils.get_keys(
-                        dic=self.crossroads[normalized_coordinates], value=UNEXPLORED)
-                    if unexplored_axis_list:  # List not empty
-                        self.action = self._what_side(axis_precedence(unexplored_axis_list))
-                    else:
-                        # Assert all are explored: we assume that the search is always depth first
-                        assert all((elem in (EXPLORED, ORIGIN) for elem in self.crossroads[normalized_coordinates]))
-                        # Maintain return mode
-                        self.explore_mode = RETURN
-                        # Go to origin
-                        self.action = self._what_side(
-                            utils.get_key(dic=self.crossroads[normalized_coordinates], value=ORIGIN))
+                    self._goto_unexplored(walls_per_dir, normalized_coordinates)
 
-                    if self.action != "front":
-                        self.next_action = "front"
-        # * Normal road -> Go front---------------------
+        # * Normal road -> Continue w/o turning back ---------------------
         elif walls_count == 2:
             open_passages_sides = utils.get_keys(walls_per_dir, "clear")
             if LEFT_ID in open_passages_sides:
@@ -517,13 +513,12 @@ class MyRob(CRobLinkAngs):
             else:
                 raise AssertionError("Unexpected state: at least 3 walls found, but 2 expected")
 
-            # If robot turns, give double command
-            #   (remember that it has already turned and doesn't need to turn another time
-            if self.action in ("left", "right"):
-                self.next_action = "front"
-
         else:
             raise AssertionError(f"Unexpected number of walls: {walls_count}.")
+
+        # If robot turns, give double command (makes no sense to do 2 turns in this logic)
+        if self.action != "front":
+            self.next_action = "front"
 
     def _do_micro_action(self):
 
@@ -533,8 +528,10 @@ class MyRob(CRobLinkAngs):
         angle_error: float = self._get_angle_error()  # between -180 and 180
 
         if self.axis in (X, Y):
-            left_dist: float = 1 / self.measures.irSensor[LEFT_ID]
-            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID]
+            left_dist: float = 1 / self.measures.irSensor[LEFT_ID]\
+                if self.measures.irSensor[LEFT_ID] != 0 else 10
+            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID]\
+                if self.measures.irSensor[RIGHT_ID] != 0 else 10
 
             # Checks if the robot is in a corridor (has walls on both sides in the current cell)
             is_corridor: bool = (left_dist + right_dist) - 0.8 <= .2
@@ -545,7 +542,7 @@ class MyRob(CRobLinkAngs):
                 self.logger.warning("Robot is straying too much from the center at this corridor!")
 
             # Scope: 0 <= error <= 1
-            error: float = (angle_error / 20.0) * 0.7 + (deviation_error / .8) * 0.3  # Tunable percentages | TODO tune
+            error: float = (angle_error / 20.0) * 0.7 + (deviation_error / .6) * 0.3  # Tunable percentages | TODO tune
             rot = MAX_POW * error
 
             # Linear velocity value should not make the global velocity surpasses MAX_POW
@@ -585,8 +582,8 @@ class MyRob(CRobLinkAngs):
         :return:
         """
         axis: str = self.get_orientation_axis()
-        walls = [utils.eval_distance(wall) for wall in self.measures.irSensor]
-        walls_dir: Dict[int, float] = {side: utils.eval_distance(self.measures.irSensor[side]) for side in range(4)}
+        walls: List[str] = [utils.eval_distance(wall) for wall in self.measures.irSensor]
+        walls_dir: Dict[int, str] = {side: utils.eval_distance(self.measures.irSensor[side]) for side in range(4)}
 
         axis_walls = dict()
 
@@ -690,21 +687,32 @@ class MyRob(CRobLinkAngs):
             based on the: front wall (more walls may be taken into account in the future TODO do it now)
         :return: True if a correction was carried out
         """
-        center, left, right, back = (1 / self.measures.irSensor[j] for j in range(4))
-        axis_index: int = 0 if self.axis == X else 1
+        center, _, __, back = (1 / self.measures.irSensor[j] for j in range(4))
+        if self.get_orientation_axis() in ("NORTH", "SOUTH"):
+            axis_index: int = 1
+        elif self.get_orientation_axis() in ("EAST", "WEST"):
+            axis_index: int = 0
+        else:
+            raise AssertionError(f"Invalid cardinal orientation: {self.get_orientation_axis()}")
 
         # Check if there is a wall at the front of the robot
-        if not utils.eval_distance(self.measures.irSensor[CENTER_ID]) == "wall":
-            self.logger.debug("Halted robot estimate: No front wall detected!")
+        back_exists, front_exists = (utils.eval_distance(self.measures.irSensor[_id]) == "wall" for _id in (BACK_ID, CENTER_ID))
+        if not back_exists and not front_exists:
+            self.logger.debug("Halted robot estimate: No front nor back wall detected!")
             return False
 
-        # Calculate the robot position estimate at self.axis based on the front wall
+        # Calculate the robot position estimate at self.axis based on the front and back wall
         pos_center = list(self._get_normalized_estimate())
-        pos_center[axis_index] += .45 - center
-        self.logger.debug(f"Halted robot estimate: {self.axis} = ({round(pos_center[axis_index], 3)})")
+        optimal_wall_dist: float = .45  # .5 when wall width is 0.0, .4 when 0.1
+        if front_exists:
+            pos_center[axis_index] += optimal_wall_dist - center
+        if back_exists:
+            pos_center[axis_index] -= optimal_wall_dist - back
+        self.logger.debug(f"Halted robot estimate: {'x' if self.axis == X else 'y'} "
+                          f"= ({round(pos_center[axis_index], 3)})")
 
         # Average the result (50/50 or other)
-        self.last_corr_pos[axis_index] = self.last_corr_pos[axis_index] * .5 + pos_center[axis_index] * .5
+        self.last_corr_pos[axis_index] = self.last_corr_pos[axis_index] * .2 + pos_center[axis_index] * .8
         return True
 
     def _get_normalized_estimate(self) -> tuple:
@@ -714,6 +722,35 @@ class MyRob(CRobLinkAngs):
         :return:
         """
         return tuple(int(2 * round(elem / 2)) for elem in self.last_corr_pos)
+
+    def _goto_unexplored(self, walls_per_dir: dict, normalized_coordinates: tuple) -> bool:
+        """
+        Orders the robot to go to an unexplored crossroad. If none, go to ORIGIN pathway
+        :param walls_per_dir:
+        :param normalized_coordinates:
+        :return: False if all pathways are explored, and so the robot is set to ORIGIN
+        """
+        # Go to first unexplored
+        for side_id in range(4):
+            # The first clear pathway is the way to go
+            status: int = self.crossroads[normalized_coordinates][self.get_axis_for_side(side_id=side_id)]
+            if walls_per_dir[side_id] == "clear" and status == UNEXPLORED:
+                self.action = POSSIBLE_ACTIONS[side_id]
+                break
+        else:
+            # No pathways left to explore
+            # Consistency assert
+            assert all(
+                (elem in (EXPLORED, ORIGIN, WALL) for elem in self.crossroads[normalized_coordinates].values())
+            ), f"Inconsistent crossroad: {normalized_coordinates}: {self.crossroads[normalized_coordinates]}"
+            # Set return mode
+            self.explore_mode = RETURN
+            # Go to origin
+            self.action = self._what_side(
+                utils.get_key(self.crossroads[normalized_coordinates], ORIGIN)
+            )
+            return False
+        return True
 
 
 class Map:
