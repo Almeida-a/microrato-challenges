@@ -4,13 +4,13 @@ from typing import Any, List
 WALL_MAX_DIST: float = .7
 
 
-def eval_distance(obstacle_sensor: float) -> str:
+def eval_distance(obstacle_sensor: float, distance_threshold: float = WALL_MAX_DIST) -> str:
     """
     Assumes the robot is at the center of the cell
+    :param distance_threshold: 
     :param obstacle_sensor: Obstacle sensor's value (any one)
     :return: WALL or CLEAR, if WALL, it means the obstacle detector is detecting a wall
     """
-    distance_threshold: float = WALL_MAX_DIST
     obstacle_sensor_dist = 1 / obstacle_sensor
     if obstacle_sensor_dist < distance_threshold:
         return "wall"

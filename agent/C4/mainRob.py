@@ -27,7 +27,7 @@ Y: int = 20
 ROT: int = 30
 # Crossroads passages
 UNEXPLORED: int = 100
-PART_EXPLORED: int = 200  # TODO implement partially explored crossroad pathways (which means that the pathway is not fully explored, but it isn't unknown either
+PART_EXPLORED: int = 200
 ORIGIN: int = 300
 EXPLORED: int = 400
 WALL: int = 500
@@ -55,6 +55,8 @@ ROTATION_DECELERATION_THRESH: float = 30.0  # When angle error falls below this 
 TRANSLATION_DECELERATION_THRESH: float = .3  # When translation error falls below, velocity begins to decelerate
 SENSOR_DIFF_MIN: float = 0.7  # E.g. 0.3 -> If sensor increment is less than 30% of Mov. Model, discard it
 SENSOR_DIFF_MAX: float = 1.5  # E.g. 1.5 -> If sensor increment is more than 150% of Mov. Model, discard it
+
+
 # ------------------------------------------------------------------------------
 
 
@@ -80,6 +82,7 @@ class MyRob(CRobLinkAngs):
     logging.config.dictConfig(config)
 
     def __init__(self, rob_name, rob_id, angles, host):
+        self.rob_name = rob_name
         CRobLinkAngs.__init__(self, rob_name, rob_id, angles, host)
         # Logger
         self.logger = logging.getLogger("mainRob_file")
@@ -89,10 +92,8 @@ class MyRob(CRobLinkAngs):
         self.lin_m1: float = .0
         self.last_eff_pow: Tuple[float, float] = (.0, .0)  # outL, outR
 
-        # Movement
+        # Target pose
         self.target_pose: Dict[int, int] = {X: 0, Y: 0, ROT: 0}
-
-        # Exploration
         # Micro-action command
         self.action: str = "start"
         self.next_action: str = ""
@@ -101,8 +102,6 @@ class MyRob(CRobLinkAngs):
         # Associates a crossroad's center coordinates to the crossroads where they lead to
         # e.g.: (x, y) -> {north=(x1, y1), east=ORIGIN, west=(x2, y2), south=EXPLORED}
         self.crossroads: Dict[Tuple[int, int], Dict[str, Union[Tuple[int, int], int]]] = {}
-
-        # Correction model
         # Hold position estimation with M.M. + with
         self.last_corr_pos: List[float, float] = [.0, .0]
         # Axis - can be X, Y or ROT
@@ -111,6 +110,8 @@ class MyRob(CRobLinkAngs):
         self.sensors_m1: List[float] = [-1., -1., -1., -1.]
         # Keep the last not-corrected pose estimation (uncertain/shaky certainty)
         self.last_mm_pos: Tuple[float, float] = .0, .0
+        # Keep the center coordinates of the last cell the robot was in
+        self.last_normalized_coordinates: Tuple[int, int] = (0, 0)
 
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2]. to know if there
     # is a wall on top of cell(i,j) (i in 0..5), check if the value of labMap[i*2+1][j*2] is space or not
@@ -203,6 +204,8 @@ class MyRob(CRobLinkAngs):
 
         # If close enough to the target cell, proceed
         if self._is_micro_action_complete():
+            # Logs
+            self._log_cycle_class_vars()
             # Save info to the internal map
             self.write_cell_to_map()
             # Decide next actions (move 1 cell front or turn)
@@ -213,9 +216,6 @@ class MyRob(CRobLinkAngs):
             self._halted_robot_correction()
 
             assert self.action in POSSIBLE_ACTIONS, f"Action: {self.action} not an action!"
-
-        # Logs
-        self._log_cycle_class_vars()
 
         # Move
         self._do_micro_action()
@@ -318,7 +318,6 @@ class MyRob(CRobLinkAngs):
 
         return orientation[side_id]
 
-
     def _stateless_correction(self):
 
         # TUNABLE parameters
@@ -397,6 +396,8 @@ class MyRob(CRobLinkAngs):
             self.logger.debug(f"Critically close (d = {d_front}) to front wall!")
             self.target_pose[X], self.target_pose[Y] = self._get_normalized_estimate()
             self.logger.info(f"Reset target position: (x, y) = {tuple(self.target_pose[ax] for ax in (X, Y))}")
+            self._mend_crossroad()
+            self.logger.info(f"Carried out mending ")
             self.logger.debug("Micro-action COMPLETE")
             return True
 
@@ -462,10 +463,18 @@ class MyRob(CRobLinkAngs):
         normalized_coordinates = self._get_normalized_estimate()
         self.logger.debug(f"Normalized coordinates: {normalized_coordinates}")
 
+        # Check if last cell was a crossroad
+        if self.last_normalized_coordinates in self.crossroads.keys() and self.explore_mode == EXPLORE:
+            # Assert consistent logic
+            assert self.crossroads[self.last_normalized_coordinates][self.get_orientation_axis()] in (
+                UNEXPLORED, PART_EXPLORED
+            ), f"Inconsistent logic on cell {self.last_normalized_coordinates}."
+            # Set the traversed pathway as partially explored
+            self.crossroads[
+                self.last_normalized_coordinates][self.get_orientation_axis()] = PART_EXPLORED
+
         # * Dead-end cell
         if walls_count == 3:
-            # assert that the robot encounters the dead-end front face first
-            assert utils.get_key(walls_per_dir, "clear") == BACK_ID
             assert self.explore_mode == EXPLORE, f"Explore expected, found {self.explore_mode}"
             # Command -> Go back
             self.explore_mode = RETURN
@@ -500,7 +509,6 @@ class MyRob(CRobLinkAngs):
                     self.explore_mode = EXPLORE
 
                     self._goto_unexplored(walls_per_dir, normalized_coordinates)
-
         # * Normal road -> Continue w/o turning back ---------------------
         elif walls_count == 2:
             open_passages_sides = utils.get_keys(walls_per_dir, "clear")
@@ -512,13 +520,14 @@ class MyRob(CRobLinkAngs):
                 self.action = "front"
             else:
                 raise AssertionError("Unexpected state: at least 3 walls found, but 2 expected")
-
         else:
             raise AssertionError(f"Unexpected number of walls: {walls_count}.")
 
         # If robot turns, give double command (makes no sense to do 2 turns in this logic)
         if self.action != "front":
             self.next_action = "front"
+
+        self.last_normalized_coordinates = self._get_normalized_estimate()
 
     def _do_micro_action(self):
 
@@ -528,9 +537,9 @@ class MyRob(CRobLinkAngs):
         angle_error: float = self._get_angle_error()  # between -180 and 180
 
         if self.axis in (X, Y):
-            left_dist: float = 1 / self.measures.irSensor[LEFT_ID]\
+            left_dist: float = 1 / self.measures.irSensor[LEFT_ID] \
                 if self.measures.irSensor[LEFT_ID] != 0 else 10
-            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID]\
+            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID] \
                 if self.measures.irSensor[RIGHT_ID] != 0 else 10
 
             # Checks if the robot is in a corridor (has walls on both sides in the current cell)
@@ -542,7 +551,7 @@ class MyRob(CRobLinkAngs):
                 self.logger.warning("Robot is straying too much from the center at this corridor!")
 
             # Scope: 0 <= error <= 1
-            error: float = (angle_error / 20.0) * 0.7 + (deviation_error / .6) * 0.3  # Tunable percentages | TODO tune
+            error: float = (angle_error / 20.0) * 0.8 + (deviation_error / .6) * 0.2  # Tunable percentages | TODO tune
             rot = MAX_POW * error
 
             # Linear velocity value should not make the global velocity surpasses MAX_POW
@@ -696,7 +705,8 @@ class MyRob(CRobLinkAngs):
             raise AssertionError(f"Invalid cardinal orientation: {self.get_orientation_axis()}")
 
         # Check if there is a wall at the front of the robot
-        back_exists, front_exists = (utils.eval_distance(self.measures.irSensor[_id]) == "wall" for _id in (BACK_ID, CENTER_ID))
+        back_exists, front_exists = (utils.eval_distance(self.measures.irSensor[_id]) == "wall" for _id in
+                                     (BACK_ID, CENTER_ID))
         if not back_exists and not front_exists:
             self.logger.debug("Halted robot estimate: No front nor back wall detected!")
             return False
@@ -717,8 +727,7 @@ class MyRob(CRobLinkAngs):
 
     def _get_normalized_estimate(self) -> tuple:
         """
-        Calculate coordinates of the center of the cell where the robot is
-            estimated to be in
+        Calculate coordinates of the center of the cell where the robot is estimated to be in
         :return:
         """
         return tuple(int(2 * round(elem / 2)) for elem in self.last_corr_pos)
@@ -728,16 +737,25 @@ class MyRob(CRobLinkAngs):
         Orders the robot to go to an unexplored crossroad. If none, go to ORIGIN pathway
         :param walls_per_dir:
         :param normalized_coordinates:
-        :return: False if all pathways are explored, and so the robot is set to ORIGIN
+        :return: False if all pathways are fully explored, and so the robot is set to ORIGIN
         """
+        backup_action: bool = False
+
         # Go to first unexplored
         for side_id in range(4):
             # The first clear pathway is the way to go
             status: int = self.crossroads[normalized_coordinates][self.get_axis_for_side(side_id=side_id)]
-            if walls_per_dir[side_id] == "clear" and status == UNEXPLORED:
-                self.action = POSSIBLE_ACTIONS[side_id]
-                break
+            if walls_per_dir[side_id] == "clear":
+                if status == UNEXPLORED:
+                    self.action = POSSIBLE_ACTIONS[side_id]
+                    break
+                elif status == PART_EXPLORED and backup_action is False:
+                    self.action = POSSIBLE_ACTIONS[side_id]
+                    backup_action = True
         else:
+            # If a backup action exists, return
+            if backup_action:
+                return True
             # No pathways left to explore
             # Consistency assert
             assert all(
@@ -745,12 +763,38 @@ class MyRob(CRobLinkAngs):
             ), f"Inconsistent crossroad: {normalized_coordinates}: {self.crossroads[normalized_coordinates]}"
             # Set return mode
             self.explore_mode = RETURN
-            # Go to origin
-            self.action = self._what_side(
-                utils.get_key(self.crossroads[normalized_coordinates], ORIGIN)
-            )
+            # Go to origin (if robot has finished exploring, it is at spawn cell and none exists!)
+            if ORIGIN not in self.crossroads[normalized_coordinates].values():
+                self.finish()
+            else:
+                self.action = self._what_side(
+                    utils.get_key(self.crossroads[normalized_coordinates], ORIGIN)
+                )
             return False
         return True
+
+    def _mend_crossroad(self):
+        """
+        Mends the information held regarding the current crossroad
+        :return:
+        """
+        norm_pos: tuple = self._get_normalized_estimate()
+        # Check if current cell is in the crossroad dict
+        if not (norm_pos in self.crossroads.keys()):
+            return
+        # Check if current cell is a crossroad. If not, remove from list and return
+        if [utils.eval_distance(sensor) for sensor in self.measures.irSensor].count("clear") <= 2:
+            self.crossroads.pop(norm_pos)
+            return
+        # Correct false pathways
+        for key, value in self.crossroads[norm_pos].items():
+            # Get side from key
+            side: int = POSSIBLE_ACTIONS.index(self._what_side(key))
+            # Detect and correct false pathway, if such exists
+            if value in (UNEXPLORED, ORIGIN, PART_EXPLORED)\
+                    and utils.eval_distance(self.measures.irSensor[side]) == "wall":  # TODO Use reduced threshold?
+                # False pathway detected. Carry out correction
+                self.crossroads[norm_pos][key] = WALL
 
 
 class Map:
