@@ -217,9 +217,12 @@ def read_map(map_filename: str) -> List[List[str]]:
         # Append array into matrix
         map_matrix.append(list(line))
 
-    f.close()
-
-    return map_matrix[:-1]  # Trim last line
+    if len(lines[-1]) == 1:
+        f.close()
+        return map_matrix[:-1]
+    else:
+        f.close()
+        return map_matrix
 
 
 def calc_path(map_filename: str):
