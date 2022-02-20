@@ -1,16 +1,16 @@
+import csv
 import logging
 import logging.config
 import sys
-
-import yaml
+import xml.etree.ElementTree as ET
 from typing import Tuple, List, Dict, Union
+
+import numpy as np
+import yaml
+from numpy import cos, pi
 
 import utils
 from croblink import *
-import xml.etree.ElementTree as ET
-import csv
-import numpy as np
-from numpy import cos, sin, pi
 
 CELLROWS = 7
 CELLCOLS = 14
@@ -48,13 +48,22 @@ THRESH_DIST_INHIBITOR: float = .5
 THRESHOLD_DIST *= THRESH_DIST_INHIBITOR
 # Max angle error measure value (assuming always > 0)
 MAX_ANGLE_ERROR: float = 180.0
+# Map initial char
+MAP_DEFAULT_CHAR: str = ' '
 
 # --------------------------------- TUNABLE constants --------------------------
-MAX_POW: float = .1  # Max. distance the robot can run in one cycle
-ROTATION_DECELERATION_THRESH: float = 30.0  # When angle error falls below this value, velocity begins to decelerate
-TRANSLATION_DECELERATION_THRESH: float = .3  # When translation error falls below, velocity begins to decelerate
-SENSOR_DIFF_MIN: float = 0.7  # E.g. 0.3 -> If sensor increment is less than 30% of Mov. Model, discard it
-SENSOR_DIFF_MAX: float = 1.5  # E.g. 1.5 -> If sensor increment is more than 150% of Mov. Model, discard it
+# The closest a robot can be to the front wall without stopping
+WALL_MAX_PROXIMITY: float = .45
+# Velocity upper bound
+MAX_POW: float = .1
+# When angle error falls below this value, velocity begins to decelerate
+ROTATION_DECELERATION_THRESH: float = 30.0
+# When translation error falls below, velocity begins to decelerate
+TRANSLATION_DECELERATION_THRESH: float = .5
+# E.g. 0.3 -> If sensor increment is less than 30% of Mov. Model, discard it
+SENSOR_DIFF_MIN: float = 0.7
+# E.g. 1.5 -> If sensor increment is more than 150% of Mov. Model, discard it
+SENSOR_DIFF_MAX: float = 1.5
 
 
 # ------------------------------------------------------------------------------
@@ -113,6 +122,10 @@ class MyRob(CRobLinkAngs):
         # Keep the center coordinates of the last cell the robot was in
         self.last_normalized_coordinates: Tuple[int, int] = (0, 0)
 
+        # Mapping
+        self.inner_map: List[List[str]] = [[MAP_DEFAULT_CHAR] * (4 * CELLCOLS - 1) for k in range(4 * CELLROWS - 1)]
+        self.target_count = 0
+
     # In this map the center of cell (i,j), (i in 0..6, j in 0..13) is mapped to labMap[i*2][j*2]. to know if there
     # is a wall on top of cell(i,j) (i in 0..5), check if the value of labMap[i*2+1][j*2] is space or not
     def setMap(self, labMap):
@@ -142,6 +155,7 @@ class MyRob(CRobLinkAngs):
                 self.readSensors()
 
                 if self.measures.endLed is True:
+                    self.write_inner_map("solution.map")
                     print(self.rob_name + " exiting")
                     quit()
 
@@ -164,7 +178,7 @@ class MyRob(CRobLinkAngs):
 
                     # Log state and real coordinates
                     self.logger.debug(f"Current real coordinates are: (x,y) = {(round(x, 3), round(y, 3))}")
-                    # Do stateful correction
+                    # Do stateless correction
                     self._stateless_correction()
 
                     # Write in csv
@@ -384,7 +398,7 @@ class MyRob(CRobLinkAngs):
             return True
 
         # Tolerance margins from the target pose
-        margins: Dict[str, float] = dict(x=.25, y=.25, turn=20.0)  # margin values can be tuned
+        margins: Dict[str, float] = dict(x=.20, y=.20, turn=4.)  # margin values can be tuned
 
         error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
         error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
@@ -392,27 +406,27 @@ class MyRob(CRobLinkAngs):
 
         # If the walls are critically close, force stop and signal completion
         d_front = 1 / self.measures.irSensor[CENTER_ID]
-        if self.action == "front" and d_front < .5:
+        if self.action == "front" and d_front < WALL_MAX_PROXIMITY:
             self.logger.debug(f"Critically close (d = {d_front}) to front wall!")
             self.target_pose[X], self.target_pose[Y] = self._get_normalized_estimate()
             self.logger.info(f"Reset target position: (x, y) = {tuple(self.target_pose[ax] for ax in (X, Y))}")
-            self._mend_crossroad()
-            self.logger.info(f"Carried out mending ")
+            if self._mend_crossroad() is True:
+                self.logger.warning(f"Mending was applied!")
             self.logger.debug("Micro-action COMPLETE")
             return True
 
         # Check closeness from the:
         # * x-axis
-        if error_x > margins["x"]:
+        if error_x > margins["x"] and self.axis == X:
             self.logger.debug(f"Not close enough (e = {error_x}) from X set point")
             return False
         # * y axis
-        if error_y > margins["y"]:
+        if error_y > margins["y"] and self.axis == Y:
             self.logger.debug(f"Not close enough (e = {error_y}) from Y set point")
             return False
         # * turn axis (rotation)
         if self.axis == ROT:
-            if error_angle > margins["turn"] * .25:  # 75% less margin when rotating
+            if error_angle > margins["turn"]:
                 # We shrank the tolerance here since it is more important for the robot's angle to
                 #   be correct in this case because it is likely starting an action of "going ahead",
                 #   propagating any angle error to larger proportions
@@ -421,7 +435,7 @@ class MyRob(CRobLinkAngs):
         else:
             self._halted_robot_correction()
 
-            if error_angle > margins["turn"]:
+            if error_angle > margins["turn"] * 4:  # 4 times more margin
                 # In this case, the robot is going ahead and the self.correct_pose is already adjusting
                 #   the C4's orientation, so a slightly larger slack is acceptable
                 self.logger.debug(f"Not close enough (e = {error_angle}) from Angle set point")
@@ -475,7 +489,8 @@ class MyRob(CRobLinkAngs):
 
         # * Dead-end cell
         if walls_count == 3:
-            assert self.explore_mode == EXPLORE, f"Explore expected, found {self.explore_mode}"
+            assert self.explore_mode == EXPLORE, f"Explore expected," \
+                                                 f"found {'Return' if self.explore_mode == RETURN else self.explore_mode}"
             # Command -> Go back
             self.explore_mode = RETURN
             self.action = "back"
@@ -537,6 +552,9 @@ class MyRob(CRobLinkAngs):
         angle_error: float = self._get_angle_error()  # between -180 and 180
 
         if self.axis in (X, Y):
+
+            axis_index: int = 1 if self.axis == Y else 0
+
             left_dist: float = 1 / self.measures.irSensor[LEFT_ID] \
                 if self.measures.irSensor[LEFT_ID] != 0 else 10
             right_dist: float = 1 / self.measures.irSensor[RIGHT_ID] \
@@ -551,12 +569,18 @@ class MyRob(CRobLinkAngs):
                 self.logger.warning("Robot is straying too much from the center at this corridor!")
 
             # Scope: 0 <= error <= 1
-            error: float = (angle_error / 20.0) * 0.8 + (deviation_error / .6) * 0.2  # Tunable percentages | TODO tune
+            error: float = (angle_error / 20.0) * 0.5 + (deviation_error / .6) * 0.5
             rot = MAX_POW * error
 
             # Linear velocity value should not make the global velocity surpasses MAX_POW
             max_lin = MAX_POW - rot
-            lin = max_lin
+            k: float = 1.
+            if len(self.last_corr_pos) == 2:
+                # Get the difference from current robot position and set point
+                error: float = abs(self.last_corr_pos[axis_index] - self.target_pose[self.axis])
+                k = min(error / TRANSLATION_DECELERATION_THRESH, 1.)
+
+            lin = max_lin * k
 
         elif self.axis == ROT:
             k: float = MAX_POW / ROTATION_DECELERATION_THRESH
@@ -611,12 +635,49 @@ class MyRob(CRobLinkAngs):
         return axis_walls, walls_dir
 
     def write_cell_to_map(self):
-        pass
-
-    def _what_side(self, target_axis: str):
         """
 
-        :param target_axis: Reference axis
+        :return:
+        """
+        # Holds the distances of the corresponding cardinal axis
+        north, south, east, west = [self.measures.irSensor[POSSIBLE_ACTIONS.index(self._what_side(ax))]
+                                    for ax in ("NORTH", "SOUTH", "EAST", "WEST")]
+        # Get the (local) position coordinates of the robot in the map
+        x, y = self._get_normalized_estimate()
+        # Maps the position coordinates to the inner map's
+        i, j = (CELLROWS * 2 - y, CELLCOLS * 2 + x)
+
+        # Write 'X' or 'O'/'1'/'2'/'3' to the current cell if cell hasn't been written on before
+        if ((x, y) == (0, 0) or self.measures.ground is True) and self.inner_map[i][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j] = f"{self.target_count}"
+            self.target_count += 1
+        elif self.inner_map[i][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j] = "X"
+
+        # Write '-' to NORTH or SOUTH cells, if wall exists, and it has not been written on before
+        if utils.eval_distance(north) == "wall" and self.inner_map[i - 1][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i - 1][j] = '-'
+        elif self.inner_map[i - 1][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i - 1][j] = 'X'
+        if utils.eval_distance(south) == "wall" and self.inner_map[i + 1][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i + 1][j] = '-'
+        elif self.inner_map[i + 1][j] == MAP_DEFAULT_CHAR:
+            self.inner_map[i + 1][j] = 'X'
+
+        # Write '|' to EAST or SOUTH cells, if wall exists, and it has not been written on before
+        if utils.eval_distance(west) == "wall" and self.inner_map[i][j - 1] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j - 1] = '|'
+        elif self.inner_map[i][j - 1] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j - 1] = 'X'
+        if utils.eval_distance(east) == "wall" and self.inner_map[i][j + 1] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j + 1] = '|'
+        elif self.inner_map[i][j + 1] == MAP_DEFAULT_CHAR:
+            self.inner_map[i][j + 1] = 'X'
+
+    def _what_side(self, target_axis: str) -> str:
+        """
+
+        :param target_axis: Cardinal axis
         :return: Given the orientation of the robot, what side of it is the referenced axis?
         E.g.: NORTH is to the right side of a WEST faced C4
         """
@@ -725,11 +786,12 @@ class MyRob(CRobLinkAngs):
         self.last_corr_pos[axis_index] = self.last_corr_pos[axis_index] * .2 + pos_center[axis_index] * .8
         return True
 
-    def _get_normalized_estimate(self) -> tuple:
+    def _get_normalized_estimate(self) -> Tuple[int, int]:
         """
         Calculate coordinates of the center of the cell where the robot is estimated to be in
         :return:
         """
+        assert len(self.last_corr_pos) == 2, f"Incorrect coordinates format! {self.last_corr_pos}"
         return tuple(int(2 * round(elem / 2)) for elem in self.last_corr_pos)
 
     def _goto_unexplored(self, walls_per_dir: dict, normalized_coordinates: tuple) -> bool:
@@ -773,28 +835,39 @@ class MyRob(CRobLinkAngs):
             return False
         return True
 
-    def _mend_crossroad(self):
+    def _mend_crossroad(self) -> bool:
         """
         Mends the information held regarding the current crossroad
-        :return:
+        :return: True if a change occurred
         """
         norm_pos: tuple = self._get_normalized_estimate()
         # Check if current cell is in the crossroad dict
         if not (norm_pos in self.crossroads.keys()):
-            return
+            return False
         # Check if current cell is a crossroad. If not, remove from list and return
         if [utils.eval_distance(sensor) for sensor in self.measures.irSensor].count("clear") <= 2:
             self.crossroads.pop(norm_pos)
-            return
+            return True
+        changed: bool = False
         # Correct false pathways
         for key, value in self.crossroads[norm_pos].items():
             # Get side from key
             side: int = POSSIBLE_ACTIONS.index(self._what_side(key))
             # Detect and correct false pathway, if such exists
-            if value in (UNEXPLORED, ORIGIN, PART_EXPLORED)\
+            if value in (UNEXPLORED, ORIGIN, PART_EXPLORED) \
                     and utils.eval_distance(self.measures.irSensor[side]) == "wall":  # TODO Use reduced threshold?
                 # False pathway detected. Carry out correction
                 self.crossroads[norm_pos][key] = WALL
+                changed = True
+        return changed
+
+    def write_inner_map(self, filename: str):
+        f = open(filename, mode="w")
+        for i, row in enumerate(self.inner_map):
+            for j, value in enumerate(row):
+                f.write(value)
+            f.write("\n")
+        f.close()
 
 
 class Map:
