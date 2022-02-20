@@ -53,18 +53,18 @@ MAP_DEFAULT_CHAR: str = ' '
 
 # --------------------------------- TUNABLE constants --------------------------
 # The closest a robot can be to the front wall without stopping
-WALL_MAX_PROXIMITY: float = .45
+WALL_MAX_PROXIMITY: float = .5
 # Velocity upper bound
 MAX_POW: float = .1
 # When angle error falls below this value, velocity begins to decelerate
 ROTATION_DECELERATION_THRESH: float = 30.0
 # When translation error falls below, velocity begins to decelerate
 TRANSLATION_DECELERATION_THRESH: float = .5
-# E.g. 0.3 -> If sensor increment is less than 30% of Mov. Model, discard it
-SENSOR_DIFF_MIN: float = 0.7
-# E.g. 1.5 -> If sensor increment is more than 150% of Mov. Model, discard it
-SENSOR_DIFF_MAX: float = 1.5
-
+# E.g. 0.75 -> If sensor increment is less than 75% of Mov. Model, discard it
+SENSOR_DIFF_MIN: float = 1.0
+# E.g. 1.35 -> If sensor increment is more than 135% of Mov. Model, discard it
+SENSOR_DIFF_MAX: float = 1.0
+# Note: set both values to 1 to fully discard sensor increment measurements
 
 # ------------------------------------------------------------------------------
 
