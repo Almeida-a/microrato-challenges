@@ -44,17 +44,17 @@ MAX_ANGLE_ERROR: float = 180.0
 # Map initial char
 MAP_DEFAULT_CHAR: str = ' '
 
-# --------- Major Configurations -----------
+# --------------------------- Major Configurations -----------------------------
 
-# The robot tries to go towards the beacon 0
+# The robot tries to go towards the beacon 0 - DEPRECATE
 SEARCH_FOR_BEACON_0: bool = False
 
-# ------------------------------------------
+# ----------------------------- TUNABLE constants ------------------------------
 
-# --------------------------------- TUNABLE constants --------------------------
-
+# Minimum distance between two measurements: for the agent to estimate the beacon's position
+MIN_DISTANCE_B0_POS: float = 2.0
 # The closest a robot can be to the front wall without stopping
-WALL_MAX_PROXIMITY: float = .5
+WALL_MAX_PROXIMITY: float = .47
 # Velocity upper bound
 MAX_POW: float = .1
 # When angle error falls below this value, velocity begins to decelerate
@@ -62,7 +62,7 @@ ROTATION_DECELERATION_THRESH: float = 30.0
 # When translation error falls below, velocity begins to decelerate
 TRANSLATION_DECELERATION_THRESH: float = .5
 # Increment correction weight to the orientation process
-ANGLE_RELATIVE_WEIGHT: float = .8
+ANGLE_RELATIVE_WEIGHT: float = .0
 ANGLE_ABSOLUTE_WEIGHT: float = .8
 
 
@@ -84,6 +84,30 @@ def axis_precedence(axis_list: list) -> str:
     ]
 
 
+def calculate_intersection(m1: float, b1: float, m2: float, b2: float) -> Tuple[float, float]:
+    """
+    Computes the intersection point of the lines y = m1*x + b1 and y = m2*x + b2
+    :param m1:
+    :param b1:
+    :param m2:
+    :param b2:
+    :return: The intersection point (x, y)
+    """
+
+    # Unsolvable equations
+    if m1 == m2:
+        return (sys.maxsize,) * 2
+
+    # Calculate the solution
+    x: float = (b2 - b1) / (m1 - m2)
+    y: float = m1 * x + b1
+
+    # Mathematical check
+    assert y == m2 * x + b2, "Mathematical impossibility!"
+
+    return x, y
+
+
 class MyRob(CRobLinkAngs):
     # Logging configuration load
     with open('logging.yml', 'r') as stream:
@@ -98,7 +122,7 @@ class MyRob(CRobLinkAngs):
         # Keep the wheels' power values from every previous iteration
         self.rot_m1: float = .0
         self.lin_m1: float = .0
-        self.last_eff_pow: Tuple[float, float] = (.0, .0)  # outL, outR
+        self.eff_pow: Tuple[float, float] = (.0, .0)  # outL, outR
 
         # Target pose
         self.target_pose: Dict[int, int] = {X: 0, Y: 0, ROT: 0}
@@ -130,8 +154,8 @@ class MyRob(CRobLinkAngs):
         self.target_count = 0
 
         # --- C5 vars ---
-        # Beacon sensor measurement data from previous cycles
-        self.beacon_0_m1: Tuple[bool, float] = False, 0.0
+        # Beacon sensor measurement data from a previous cycle AND the x, y, angle of that cycle
+        self.save_point: Tuple[Tuple[bool, float], Tuple[float, float, float]] = (False, .0), (.0, .0, .0)
         # Position of the beacon 0 in the map with respect to the spawn cell
         # Max-size values means that its location is still unknown
         self.beacon_0_pos: Tuple[int, int] = sys.maxsize, sys.maxsize
@@ -192,6 +216,10 @@ class MyRob(CRobLinkAngs):
                     self.logger.debug(f"Current real coordinates are: (x,y,ang) = "
                                       f"{(round(x, 3), round(y, 3), round(angle, 3))}")
 
+                    # Save this measurement for later calculation of the beacon sensor
+                    if self.save_point[0][0] is False and self.measures.beacon[0][0] is True:
+                        self.save_point = tuple(self.measures.beacon), tuple(self.last_corr_pos,)
+
                     # If no correction at (x,y) was performed: Set to mov. model's results
                     if not self.xy_correction:
                         self.last_corr_pos[0:2] = self.last_mm_pos[0:2]
@@ -207,11 +235,29 @@ class MyRob(CRobLinkAngs):
                             self.last_corr_pos[2] = self.last_mm_pos[2]
                         else:
                             self.logger.debug("Absolute rot correction performed!")
-                    else:
-                        if self._angle_relative_correction() is False:
-                            self.last_corr_pos[2] = self.last_mm_pos[2]
-                        else:
-                            self.logger.debug("Relative rot correction performed!")
+                    elif self.save_point[0][0] and self.measures.beacon[0][0]\
+                            and abs(self.save_point[1][0] - self.last_corr_pos[0]) > MIN_DISTANCE_B0_POS:
+                        # Compute the position of the beacon
+
+                        # Calculate the line parameters of the current measurement
+                        angle = self.last_corr_pos[2] + self.measures.beacon[0][1]  # degrees
+                        x, y = self.last_corr_pos[0:2]
+
+                        slope = np.arctan(np.deg2rad(angle))
+                        offset = y - slope * x
+
+                        # Calculate the line parameters of the previous measurement
+                        prev_angle = self.save_point[1][2] + self.save_point[0][1]
+                        prev_x, prev_y = self.save_point[1]
+
+                        prev_slope = np.arctan(np.deg2rad(prev_angle))
+                        prev_offset = prev_y - prev_slope * prev_x
+
+                        self.beacon_0_pos = calculate_intersection(
+                            m1=slope, b1=offset, m2=prev_slope, b2=prev_offset
+                        )
+
+                        self.logger.info(f"Beacon estimated position is: (x, y) = {self.beacon_0_pos}")
 
                     self.logger.debug(f"Beacon measure is: {self.measures.beacon}")
 
@@ -241,10 +287,12 @@ class MyRob(CRobLinkAngs):
 
                 # Save values of sensor as memory for the next loop iteration
                 self.sensors_m1 = self.measures.irSensor
-                # Save last cycle's beacon value
-                self.beacon_0_m1 = self.measures.beacon[0]
 
     def wander(self):
+
+        if self.measures.collision is True:
+            self.logger.critical("Robot has crashed!")
+            exit(1)
 
         # If close enough to the target cell, proceed
         if self._is_micro_action_complete():
@@ -252,6 +300,7 @@ class MyRob(CRobLinkAngs):
             if self.measures.ground == 1 and sys.maxsize in self.beacon_0_pos:
                 self.beacon_0_pos = self._get_normalized_estimate()
                 assert False, "Forced breakpoint"
+
             # Save info to the internal map
             self.write_cell_to_map()
             # Decide next actions (move 1 cell front or turn)
@@ -276,7 +325,7 @@ class MyRob(CRobLinkAngs):
              Estimate new pose
         """
         # Unpack variables
-        out_l, out_r = self.last_eff_pow
+        out_l, out_r = self.eff_pow
         x_m1, y_m1, angle_m1 = self.last_corr_pos
         lin = (out_r + out_l) / 2
         rot = out_r - out_l
@@ -295,14 +344,12 @@ class MyRob(CRobLinkAngs):
         # Output
         self.last_mm_pos = (x, y, angle)
 
-    def _calculate_effective_powers(self, in_r: float, in_l: float, std_dev: float = 0):
+    def _calculate_effective_powers(self, in_r: float, in_l: float):
         """
 
         :return: Estimates each wheel's effective power based on the commands given to them.
 
         """
-        # add gaussian filter (default std_dev=0)
-        g_noise: float = np.random.normal(1, std_dev)
 
         # Normalize in_{l,r} to their max power if applicable
         if abs(in_l) > MAX_POW:
@@ -311,17 +358,17 @@ class MyRob(CRobLinkAngs):
             in_r = MAX_POW if in_r > 0 else -MAX_POW
 
         # Output
-        self.last_eff_pow = (
-            g_noise * (in_l + self.last_eff_pow[0]) / 2,
-            g_noise * (in_r + self.last_eff_pow[1]) / 2
+        self.eff_pow = (
+            (in_l + self.eff_pow[0]) / 2,
+            (in_r + self.eff_pow[1]) / 2
         )
 
         self.logger.debug("Directed power: "
                           f"inL = {round(in_l, 3)}, "
                           f"inR = {round(in_r, 3)}.")
         self.logger.debug(f"Effective power: "
-                          f"outL = {round(self.last_eff_pow[0], 3)}, "
-                          f"outR = {round(self.last_eff_pow[1], 3)}.")
+                          f"outL = {round(self.eff_pow[0], 3)}, "
+                          f"outR = {round(self.eff_pow[1], 3)}.")
 
     def _update_axis(self):
         # Evaluate if N/S/E/W, then update axis and other variables as needed
@@ -382,7 +429,7 @@ class MyRob(CRobLinkAngs):
             return True
 
         # Tolerance margins from the target pose
-        margins: Dict[str, float] = dict(x=.20, y=.20, turn=4.)  # margin values can be tuned
+        margins: Dict[str, float] = dict(x=.20, y=.20, turn=5.)  # margin values can be tuned
 
         error_x: float = abs(self.last_corr_pos[0] - self.target_pose[X])
         error_y: float = abs(self.last_corr_pos[1] - self.target_pose[Y])
@@ -498,14 +545,7 @@ class MyRob(CRobLinkAngs):
                     # Reset to exploring mode
                     self.explore_mode = EXPLORE
 
-            if sys.maxsize in self.beacon_0_pos and SEARCH_FOR_BEACON_0\
-                    and self.explore_mode == EXPLORE:
-                # If position of beacon 0 is not yet known
-                #   AND the robot is configured to try finding it
-                #   AND it is not returning (probably always True, thus a bit redundant)
-                self._go_find_beacon0(walls_per_dir, normalized_coordinates)
-            else:
-                self._goto_unexplored(walls_per_dir, normalized_coordinates)
+            self._goto_unexplored(walls_per_dir, normalized_coordinates)
 
         # * Normal road -> Continue w/o turning back ---------------------
         elif walls_count == 2:
@@ -542,14 +582,14 @@ class MyRob(CRobLinkAngs):
 
             axis_index: int = 1 if self.axis == Y else 0
 
-            left_dist: float = 1 / self.measures.irSensor[LEFT_ID] \
-                if self.measures.irSensor[LEFT_ID] != 0 else 10
-            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID] \
-                if self.measures.irSensor[RIGHT_ID] != 0 else 10
+            left_dist: float = 1 / self.measures.irSensor[LEFT_ID]
+            right_dist: float = 1 / self.measures.irSensor[RIGHT_ID]
 
             # Checks if the robot is in a corridor (has walls on both sides in the current cell)
-            is_corridor: bool = utils.eval_distance(self.measures.irSensor[LEFT_ID]) == "wall"\
-                                and utils.eval_distance(self.measures.irSensor[RIGHT_ID]) == "wall"
+            is_corridor: bool = utils.eval_distance(
+                self.measures.irSensor[LEFT_ID], distance_threshold=.55) == "wall" \
+                                and utils.eval_distance(
+                self.measures.irSensor[RIGHT_ID], distance_threshold=.55) == "wall"
 
             # Measures how far the robot is from the center of the cell (using side sensors)
             deviation_error: float = left_dist - right_dist
@@ -557,7 +597,7 @@ class MyRob(CRobLinkAngs):
                 self.logger.warning("Robot is straying too much from the center at this corridor!")
 
             # Scope: 0 <= error <= 1
-            error: float = (angle_error / 90.0) * .5 + (deviation_error / 2.0) * .5
+            error: float = (angle_error / 90.0) * .3 + (deviation_error / 1.0) * .7
             if not is_corridor:
                 error = angle_error / 90.
             rot = MAX_POW * error
@@ -698,7 +738,7 @@ class MyRob(CRobLinkAngs):
         self.logger.debug(f"Current action: {self.action}.")
         self.logger.debug(f"Next action: {self.next_action}.") if self.next_action != "" else None
         self.logger.debug(f"Obstacle sensors: {self.measures.irSensor}")
-        self.logger.debug(f"Obstacle distances: {[1/self.measures.irSensor[j] for j in range(4)]}")
+        self.logger.debug(f"Obstacle distances: {[1 / self.measures.irSensor[j] for j in range(4)]}")
         self.logger.debug(f"Crossroads info: {self.crossroads}.")
         self.logger.debug(f"Current axis: {self.axis}")
         self.logger.debug(f"Robot position estimate: x=({round(self.last_corr_pos[0], 2)}), "
@@ -747,16 +787,16 @@ class MyRob(CRobLinkAngs):
 
     def _halted_robot_correction(self) -> bool:
         """
-        Assuming this function is called after the completion of a (translation?) micro-action,
+        Assuming this function is called after the completion of a micro-action,
             this function calculates the robot's position regarding the center of the cell
             based on the: front wall (more walls may be taken into account in the future)
         :return: True if a correction was carried out
         """
         center, _, __, back = (1 / self.measures.irSensor[j] for j in range(4))
         if self._get_orientation_axis() in ("NORTH", "SOUTH"):
-            axis_index: int = 1
+            axis_index: int = 1  # Y
         elif self._get_orientation_axis() in ("EAST", "WEST"):
-            axis_index: int = 0
+            axis_index: int = 0  # X
         else:
             raise AssertionError(f"Invalid cardinal orientation: {self._get_orientation_axis()}")
 
@@ -775,7 +815,7 @@ class MyRob(CRobLinkAngs):
             pos_center[axis_index] += orientation_signal * (optimal_wall_dist - center)
         if back_exists:
             pos_center[axis_index] -= orientation_signal * (optimal_wall_dist - back)
-        self.logger.debug(f"Halted robot estimate: {'x' if self.axis == X else 'y'} "
+        self.logger.debug(f"Halted robot estimate: {'x' if axis_index == 0 else 'y'} "
                           f"= ({round(pos_center[axis_index], 3)})")
 
         # Average the result (50/50 or other)
@@ -853,7 +893,7 @@ class MyRob(CRobLinkAngs):
             side: int = POSSIBLE_ACTIONS.index(self._what_side(key))
             # Detect and correct false pathway, if such exists
             if value in (UNEXPLORED, ORIGIN, PART_EXPLORED) \
-                    and utils.eval_distance(self.measures.irSensor[side]) == "wall":  # TODO Use reduced threshold?
+                    and utils.eval_distance(self.measures.irSensor[side]) == "wall":
                 # False pathway detected. Carry out correction
                 self.crossroads[norm_pos][key] = WALL
                 changed = True
@@ -877,19 +917,19 @@ class MyRob(CRobLinkAngs):
         # assert self.measures.beaconReady is True, "BeaconReady is false!"
 
         # If beacon 0 is not visible in this cycle OR wasn't visible in the last one, abort
-        if not self.measures.beacon[0][0] or not self.beacon_0_m1[0] or self.axis != ROT:
+        if not self.measures.beacon[0][0] or not self.beacon_0_save[0] or self.axis != ROT:
             return False
 
         # Check the difference between the last and current cycle's beacon measurement
         now: float = self.measures.beacon[0][1]
-        last: float = self.beacon_0_m1[1]
+        last: float = self.beacon_0_save[1]
 
         # Check the difference between the last and current cycle's mov. model estimate
         mm_diff: float = self.last_mm_pos[2] - self.last_corr_pos[2]
 
         # Carry out the increment
         self.last_corr_pos[2] += mm_diff * (1 - ANGLE_RELATIVE_WEIGHT) \
-                                + (last - now) * ANGLE_RELATIVE_WEIGHT
+                                 + (last - now) * ANGLE_RELATIVE_WEIGHT
 
         return True
 
@@ -929,61 +969,13 @@ class MyRob(CRobLinkAngs):
         robot_orientation_angle: float = self.measures.beacon[1] + beacon_robot_angle
 
         # Perform correction
-        self.last_corr_pos[2] = robot_orientation_angle * ANGLE_ABSOLUTE_WEIGHT\
+        self.last_corr_pos[2] = robot_orientation_angle * ANGLE_ABSOLUTE_WEIGHT \
                                 + self.last_corr_pos[2] * (1 - ANGLE_ABSOLUTE_WEIGHT)
 
         # Normalize the angle to interval [-180, 180[
         self.last_corr_pos[2] = (self.last_corr_pos[2] + 180) % 360 - 180
 
         return True
-
-    def _go_find_beacon0(self, walls_per_dir: Dict[int, str],
-                         normalized_coordinates: Tuple[int, int]):
-        """
-        Conditions: function must be called when the robot is at a crossroad and
-            trying to decide where to go next.
-        Algorithm:
-            check if beacon is visible
-            if visible:
-                check where, in the cardinal axis, it is
-                    if, in that axis, the pathway is unexplored or partially explored:
-                        choose the pathway
-                    else:
-                        goto_next_unexplored
-            else:
-                turn back
-                FIXME: in rare cases, the robot will probably turn back multiple times
-        """
-        assert SEARCH_FOR_BEACON_0 is True, "Robot is not configured to look for b0, however this function is called!"
-
-        # If this is spawn cell and not a crossroad
-        if tuple(walls_per_dir.values()).count("wall") >= 2:
-            # Consistency check
-            assert normalized_coordinates == (0, 0), "Only spawn cell is a" \
-                                                     " crossroad with less than 2 walls"
-            # Just explore normally
-            self._goto_unexplored(walls_per_dir, normalized_coordinates)
-
-        # Check if beacon is visible
-        beacon_0_visible: bool = self.measures.beacon[0][0]
-
-        if beacon_0_visible:
-            # check where, in the cardinal axis, the beacon is
-            beacon_0_angle: float = self.last_corr_pos[2] +\
-                                    self.measures.beacon[0][1]  # ang(robot) + ang(beacon_sensor)
-            # Find the cardinal axis of the beacon
-            card_axis: str = self._get_axis_for_angle(angle=beacon_0_angle)
-
-            if self.crossroads[normalized_coordinates][card_axis] in (UNEXPLORED, PART_EXPLORED):
-                # Go ahead
-                self.action = self._what_side(card_axis)
-            else:
-                # Forget about it
-                self._goto_unexplored(walls_per_dir, normalized_coordinates)
-
-        else:
-            self.single_action = True
-            self.action = "left"
 
 
 class Map:
